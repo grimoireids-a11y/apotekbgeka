@@ -247,6 +247,12 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password })
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error(
+          `Endpoint API autentikasi tidak merespons JSON (HTTP ${res.status}). Pastikan backend Serverless Function /api aktif pada deployment Vercel Anda.`
+        );
+      }
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || 'Login gagal.');
@@ -267,10 +273,15 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setCurrentUser(user);
       setAuthMode('staff');
       setActiveView('dashboard');
-      await fetchStaffStoreState();
+      if (data.initialState) {
+        const decrypted = await decryptDatabaseState(data.initialState as PracticeDatabase, vaultKeyRef.current);
+        setDbState(decrypted);
+      } else {
+        await fetchStaffStoreState();
+      }
       notifyToast(`Selamat datang, ${user.displayName}. Vault E2EE terbuka.`, 'success');
     },
-    [fetchStaffStoreState, notifyToast]
+    [decryptDatabaseState, fetchStaffStoreState, notifyToast]
   );
 
   const loginGoogleFirebase = useCallback(async () => {
