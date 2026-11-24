@@ -1,0 +1,6 @@
+{
+  "name": "OBGYN Practice Management System",
+  "description": "Sistem Informasi Manajemen Praktik Dokter Spesialis Obstetri dan Ginekologi (SPOG) terintegrasi dengan Rekam Medis Elektronik, Manajemen Kehamilan, USG, Kasir, Laporan, RBAC, dan Enkripsi End-to-End.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

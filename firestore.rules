@@ -1,0 +1,501 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1: Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Pillar 3: Primitives & Identity Helpers
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isVerifiedAuth() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedSuperAdmin() {
+      return isVerifiedAuth() && request.auth.token.email == 'grimoireids@gmail.com';
+    }
+
+    function hasStaffProfile() {
+      return isVerifiedAuth() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function staffRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isStaffActive() {
+      return isBootstrappedSuperAdmin() || (
+        hasStaffProfile() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true
+      );
+    }
+
+    function isSuperAdmin() {
+      return isBootstrappedSuperAdmin() || (isStaffActive() && staffRole() == 'SUPER_ADMIN');
+    }
+
+    function isDoctor() {
+      return isStaffActive() && staffRole() == 'DOKTER_SPOG';
+    }
+
+    function isAssistant() {
+      return isStaffActive() && staffRole() == 'ASISTEN_DOKTER';
+    }
+
+    function isMedicalAuthorized() {
+      return isSuperAdmin() || isDoctor();
+    }
+
+    function isCashierAuthorized() {
+      return isSuperAdmin() || isAssistant();
+    }
+
+    function isNonEmptyString(val, maxLen) {
+      return val is string && val.size() > 0 && val.size() <= maxLen;
+    }
+
+    function isValidAuditMetadata(data) {
+      return isNonEmptyString(data.id, 128) &&
+        isNonEmptyString(data.createdAt, 40) &&
+        isNonEmptyString(data.createdBy, 128) &&
+        isNonEmptyString(data.updatedAt, 40) &&
+        isNonEmptyString(data.updatedBy, 128);
+    }
+
+    function immutableAuditFieldsUnchanged() {
+      return incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().createdBy == existing().createdBy;
+    }
+
+    function isValidUserAccount(data) {
+      return data.keys().hasAll(['id', 'displayName', 'role', 'active', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']) &&
+        data.keys().hasOnly([
+          'id', 'username', 'displayName', 'email', 'role', 'strNumber', 'sipNumber',
+          'active', 'e2eeSalt', 'e2eeWrappedKey', 'e2eeFingerprint', 'e2eePublicKey',
+          'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+        ]) &&
+        isValidAuditMetadata(data) &&
+        isNonEmptyString(data.displayName, 120) &&
+        data.role in ['SUPER_ADMIN', 'DOKTER_SPOG', 'ASISTEN_DOKTER'] &&
+        data.active is bool;
+    }
+
+    function isValidPatient(data) {
+      return data.keys().hasAll(['id', 'rmNumber', 'fullName', 'birthDate', 'gender', 'active', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']) &&
+        data.keys().hasOnly([
+          'id', 'rmNumber', 'nik', 'fullName', 'birthPlace', 'birthDate', 'gender',
+          'address', 'phone', 'email', 'occupation', 'maritalStatus', 'spouseName',
+          'familyPhone', 'emergencyContact', 'bloodType', 'allergies', 'medicalHistory',
+          'surgicalHistory', 'medicationHistory', 'consentGiven', 'consentDate',
+          'e2ee', 'isDemo', 'active', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+        ]) &&
+        isValidAuditMetadata(data) &&
+        isNonEmptyString(data.rmNumber, 40) &&
+        isNonEmptyString(data.fullName, 200) &&
+        isNonEmptyString(data.birthDate, 20) &&
+        data.gender in ['Perempuan', 'Laki-laki'] &&
+        data.active is bool;
+    }
+
+    function isValidVisit(data) {
+      return data.keys().hasAll(['id', 'visitNumber', 'patientId', 'visitType', 'status', 'paymentStatus', 'visitDate', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']) &&
+        data.keys().hasOnly([
+          'id', 'visitNumber', 'patientId', 'patientName', 'patientRm', 'doctorId', 'doctorName',
+          'visitType', 'serviceCategory', 'initialComplaint', 'initialVitals', 'status',
+          'paymentStatus', 'queueNumber', 'visitDate', 'isDemo',
+          'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+        ]) &&
+        isValidAuditMetadata(data) &&
+        isValidId(data.patientId) &&
+        data.status in ['Terdaftar', 'Menunggu', 'Dipanggil', 'Sedang Diperiksa', 'Pemeriksaan Selesai', 'Menunggu Pembayaran', 'Selesai'] &&
+        data.paymentStatus in ['Belum Dibayar', 'Dibayar Sebagian', 'Lunas', 'Piutang', 'Dibatalkan', 'Dikembalikan'];
+    }
+
+    function isValidMedicalRecord(data) {
+      return data.keys().hasAll(['id', 'visitId', 'patientId', 'status', 'version', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']) &&
+        data.keys().hasOnly([
+          'id', 'visitId', 'patientId', 'patientName', 'doctorId', 'doctorName',
+          'anamnesis', 'physicalExam', 'obstetricExam', 'gynecologyExam',
+          'diagnoses', 'plan', 'status', 'signedAt', 'signedBy', 'signatureHash',
+          'version', 'e2ee', 'isDemo',
+          'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+        ]) &&
+        isValidAuditMetadata(data) &&
+        isValidId(data.visitId) &&
+        isValidId(data.patientId) &&
+        data.status in ['draft', 'signed', 'locked'] &&
+        data.version is number && data.version >= 1;
+    }
+
+    function isValidInvoice(data) {
+      return data.keys().hasAll(['id', 'invoiceNumber', 'visitId', 'patientId', 'total', 'status', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']) &&
+        data.keys().hasOnly([
+          'id', 'invoiceNumber', 'visitId', 'patientId', 'patientName', 'patientRm',
+          'items', 'subtotal', 'discount', 'tax', 'total', 'paidAmount', 'remainingAmount',
+          'status', 'adjustmentReason', 'isDemo',
+          'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+        ]) &&
+        isValidAuditMetadata(data) &&
+        isValidId(data.visitId) &&
+        isValidId(data.patientId) &&
+        data.total is number && data.total >= 0 &&
+        data.status in ['Belum Dibayar', 'Dibayar Sebagian', 'Lunas', 'Piutang', 'Dibatalkan', 'Dikembalikan'];
+    }
+
+    function isValidPayment(data) {
+      return data.keys().hasAll(['id', 'receiptNumber', 'invoiceId', 'patientId', 'amount', 'method', 'status', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']) &&
+        data.keys().hasOnly([
+          'id', 'receiptNumber', 'invoiceId', 'invoiceNumber', 'patientId', 'patientName',
+          'amount', 'receivedAmount', 'changeAmount', 'method', 'referenceNumber',
+          'status', 'cashierName', 'cancelReason', 'paymentDate', 'isDemo',
+          'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+        ]) &&
+        isValidAuditMetadata(data) &&
+        isValidId(data.invoiceId) &&
+        isValidId(data.patientId) &&
+        data.amount is number && data.amount >= 0 &&
+        data.status in ['Sukses', 'Dibatalkan', 'Dikembalikan'];
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['id', 'userId', 'userName', 'role', 'action', 'entity', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'userName', 'role', 'action', 'entity', 'entityId',
+          'beforeData', 'afterData', 'deviceInfo', 'createdAt'
+        ]) &&
+        isNonEmptyString(data.id, 128) &&
+        isNonEmptyString(data.userId, 128) &&
+        isNonEmptyString(data.userName, 160) &&
+        isNonEmptyString(data.role, 40) &&
+        isNonEmptyString(data.action, 120) &&
+        isNonEmptyString(data.entity, 80) &&
+        isNonEmptyString(data.createdAt, 40);
+    }
+
+    function isValidGenericEntity(data) {
+      return data.keys().hasAll(['id', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']) &&
+        isValidAuditMetadata(data);
+    }
+
+    // 1. Users (PII & E2EE wrapped keys strictly restricted to owner or Super Admin)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isSuperAdmin() || (isVerifiedAuth() && request.auth.uid == userId));
+      allow list: if isSuperAdmin();
+      allow create: if isValidId(userId) && isSuperAdmin() && isValidUserAccount(incoming());
+      allow update: if isValidId(userId) && isValidUserAccount(incoming()) && immutableAuditFieldsUnchanged() && (
+        isSuperAdmin() ||
+        (isVerifiedAuth() && request.auth.uid == userId &&
+          incoming().role == existing().role &&
+          incoming().active == existing().active &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'e2eeSalt', 'e2eeWrappedKey', 'e2eeFingerprint', 'updatedAt', 'updatedBy']))
+      );
+      allow delete: if isValidId(userId) && isSuperAdmin() && request.auth.uid != userId;
+    }
+
+    // 2-3. Roles & Permissions
+    match /roles/{roleId} {
+      allow get: if isValidId(roleId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.active is bool;
+      allow create: if isValidId(roleId) && isSuperAdmin() && isValidGenericEntity(incoming());
+      allow update: if isValidId(roleId) && isSuperAdmin() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if isValidId(roleId) && isSuperAdmin();
+    }
+
+    match /permissions/{permissionId} {
+      allow get: if isValidId(permissionId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.active is bool;
+      allow create: if isValidId(permissionId) && isSuperAdmin() && isValidGenericEntity(incoming());
+      allow update: if isValidId(permissionId) && isSuperAdmin() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if isValidId(permissionId) && isSuperAdmin();
+    }
+
+    // 4. Practice Settings
+    match /practice_settings/{settingId} {
+      allow get: if isValidId(settingId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.id is string;
+      allow create, update: if isValidId(settingId) && isSuperAdmin() && isValidGenericEntity(incoming());
+      allow delete: if false;
+    }
+
+    // 5-6. Patients & Patient Contacts
+    match /patients/{patientId} {
+      allow get: if isValidId(patientId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.active is bool;
+      allow create: if isValidId(patientId) && isStaffActive() && isValidPatient(incoming());
+      allow update: if isValidId(patientId) && isValidPatient(incoming()) && immutableAuditFieldsUnchanged() && (
+        isSuperAdmin() ||
+        (isCashierAuthorized() && incoming().rmNumber == existing().rmNumber) ||
+        (isDoctor() && incoming().rmNumber == existing().rmNumber)
+      );
+      allow delete: if isValidId(patientId) && isSuperAdmin();
+    }
+
+    match /patient_contacts/{contactId} {
+      allow get: if isValidId(contactId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow create: if isValidId(contactId) && isStaffActive() && isValidGenericEntity(incoming());
+      allow update: if isValidId(contactId) && isStaffActive() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if isValidId(contactId) && isSuperAdmin();
+    }
+
+    // 7-8. Visits & Queues
+    match /visits/{visitId} {
+      allow get: if isValidId(visitId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow create: if isValidId(visitId) && isStaffActive() && isValidVisit(incoming());
+      allow update: if isValidId(visitId) && isValidVisit(incoming()) && immutableAuditFieldsUnchanged() && (
+        isSuperAdmin() ||
+        (isAssistant() && incoming().patientId == existing().patientId && incoming().visitNumber == existing().visitNumber) ||
+        (isDoctor() && incoming().patientId == existing().patientId && incoming().paymentStatus == existing().paymentStatus)
+      );
+      allow delete: if isValidId(visitId) && isSuperAdmin();
+    }
+
+    match /queues/{queueId} {
+      allow get: if isValidId(queueId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.visitId is string;
+      allow create: if isValidId(queueId) && isStaffActive() && isValidGenericEntity(incoming());
+      allow update: if isValidId(queueId) && isStaffActive() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if isValidId(queueId) && isSuperAdmin();
+    }
+
+    // 9-10. Electronic Medical Records (Strictly Doctor/SuperAdmin write, terminal lock enforced)
+    match /medical_records/{recordId} {
+      allow get: if isValidId(recordId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow create: if isValidId(recordId) && isMedicalAuthorized() && isValidMedicalRecord(incoming());
+      allow update: if isValidId(recordId) && isValidMedicalRecord(incoming()) && immutableAuditFieldsUnchanged() && (
+        isSuperAdmin() ||
+        (isDoctor() && existing().status != 'locked' && incoming().patientId == existing().patientId && incoming().visitId == existing().visitId)
+      );
+      allow delete: if false;
+    }
+
+    match /medical_record_versions/{versionId} {
+      allow get: if isValidId(versionId) && isMedicalAuthorized();
+      allow list: if isMedicalAuthorized() && resource.data.medicalRecordId is string;
+      allow create: if isValidId(versionId) && isMedicalAuthorized() && isNonEmptyString(incoming().medicalRecordId, 128);
+      allow update, delete: if false;
+    }
+
+    // 11-15. Pregnancies, ANC Visits, USG, Diagnoses, ICD-10
+    match /pregnancies/{pregnancyId} {
+      allow get: if isValidId(pregnancyId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow create: if isValidId(pregnancyId) && isMedicalAuthorized() && isValidGenericEntity(incoming());
+      allow update: if isValidId(pregnancyId) && isMedicalAuthorized() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if isValidId(pregnancyId) && isSuperAdmin();
+    }
+
+    match /antenatal_visits/{ancId} {
+      allow get: if isValidId(ancId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.pregnancyId is string;
+      allow create: if isValidId(ancId) && isMedicalAuthorized() && isValidGenericEntity(incoming());
+      allow update: if isValidId(ancId) && isMedicalAuthorized() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if isValidId(ancId) && isSuperAdmin();
+    }
+
+    match /ultrasound_records/{usgId} {
+      allow get: if isValidId(usgId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow create: if isValidId(usgId) && isMedicalAuthorized() && isValidGenericEntity(incoming());
+      allow update: if isValidId(usgId) && isMedicalAuthorized() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if isValidId(usgId) && isSuperAdmin();
+    }
+
+    match /diagnoses/{diagnosisId} {
+      allow get: if isValidId(diagnosisId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow create: if isValidId(diagnosisId) && isMedicalAuthorized() && isValidGenericEntity(incoming());
+      allow update: if isValidId(diagnosisId) && isMedicalAuthorized() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if isValidId(diagnosisId) && isSuperAdmin();
+    }
+
+    match /icd10_codes/{codeId} {
+      allow get: if isValidId(codeId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.code is string;
+      allow create, update: if isValidId(codeId) && isMedicalAuthorized() && isValidGenericEntity(incoming());
+      allow delete: if isValidId(codeId) && isSuperAdmin();
+    }
+
+    // 16-21. Procedures, Services, Medicines, Prescriptions, Labs
+    match /procedures/{procedureId} {
+      allow get: if isValidId(procedureId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.visitId is string;
+      allow create: if isValidId(procedureId) && isStaffActive() && isValidGenericEntity(incoming());
+      allow update: if isValidId(procedureId) && isStaffActive() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if isValidId(procedureId) && isSuperAdmin();
+    }
+
+    match /services/{serviceId} {
+      allow get: if isValidId(serviceId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.active is bool;
+      allow create, update: if isValidId(serviceId) && isSuperAdmin() && isValidGenericEntity(incoming());
+      allow delete: if isValidId(serviceId) && isSuperAdmin();
+    }
+
+    match /medicines/{medicineId} {
+      allow get: if isValidId(medicineId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.active is bool;
+      allow create, update: if isValidId(medicineId) && isCashierAuthorized() && isValidGenericEntity(incoming());
+      allow delete: if isValidId(medicineId) && isSuperAdmin();
+    }
+
+    match /prescriptions/{rxId} {
+      allow get: if isValidId(rxId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow create: if isValidId(rxId) && isMedicalAuthorized() && isValidGenericEntity(incoming());
+      allow update: if isValidId(rxId) && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged() && (
+        isMedicalAuthorized() ||
+        (isAssistant() && existing().status == 'Disahkan Dokter' &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'dispensedAt', 'dispensedBy', 'updatedAt', 'updatedBy']))
+      );
+      allow delete: if isValidId(rxId) && isSuperAdmin();
+    }
+
+    match /laboratory_orders/{orderId} {
+      allow get: if isValidId(orderId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow create: if isValidId(orderId) && isStaffActive() && isValidGenericEntity(incoming());
+      allow update: if isValidId(orderId) && isStaffActive() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if isValidId(orderId) && isSuperAdmin();
+    }
+
+    match /laboratory_results/{resultId} {
+      allow get: if isValidId(resultId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow create: if isValidId(resultId) && isStaffActive() && isValidGenericEntity(incoming());
+      allow update: if isValidId(resultId) && isStaffActive() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if isValidId(resultId) && isSuperAdmin();
+    }
+
+    // 22-28. Cashier, Invoices, Payments, Refunds, Cash Ledger & Expenses
+    match /invoices/{invoiceId} {
+      allow get: if isValidId(invoiceId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow create: if isValidId(invoiceId) && isStaffActive() && isValidInvoice(incoming());
+      allow update: if isValidId(invoiceId) && isValidInvoice(incoming()) && immutableAuditFieldsUnchanged() && isCashierAuthorized();
+      allow delete: if false;
+    }
+
+    match /invoice_items/{itemId} {
+      allow get: if isValidId(itemId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.invoiceId is string;
+      allow create: if isValidId(itemId) && isStaffActive() && isValidGenericEntity(incoming());
+      allow update: if isValidId(itemId) && isCashierAuthorized() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if false;
+    }
+
+    match /payments/{paymentId} {
+      allow get: if isValidId(paymentId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.invoiceId is string;
+      allow create: if isValidId(paymentId) && isCashierAuthorized() && isValidPayment(incoming());
+      allow update: if isValidId(paymentId) && isValidPayment(incoming()) && immutableAuditFieldsUnchanged() && (
+        isSuperAdmin() ||
+        (isAssistant() && existing().status == 'Sukses' &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'cancelReason', 'updatedAt', 'updatedBy']))
+      );
+      allow delete: if false;
+    }
+
+    match /refunds/{refundId} {
+      allow get: if isValidId(refundId) && isCashierAuthorized();
+      allow list: if isCashierAuthorized() && resource.data.paymentId is string;
+      allow create: if isValidId(refundId) && isCashierAuthorized() && isValidGenericEntity(incoming()) && incoming().status == 'Menunggu Persetujuan';
+      allow update: if isValidId(refundId) && isSuperAdmin() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if false;
+    }
+
+    match /cash_sessions/{sessionId} {
+      allow get: if isValidId(sessionId) && isCashierAuthorized();
+      allow list: if isCashierAuthorized() && resource.data.sessionDate is string;
+      allow create: if isValidId(sessionId) && isCashierAuthorized() && isValidGenericEntity(incoming());
+      allow update: if isValidId(sessionId) && isCashierAuthorized() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if false;
+    }
+
+    match /cash_transactions/{txId} {
+      allow get: if isValidId(txId) && isCashierAuthorized();
+      allow list: if isCashierAuthorized() && resource.data.type is string;
+      allow create: if isValidId(txId) && isCashierAuthorized() && isValidGenericEntity(incoming());
+      allow update: if isValidId(txId) && isSuperAdmin() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if false;
+    }
+
+    match /expenses/{expenseId} {
+      allow get: if isValidId(expenseId) && isCashierAuthorized();
+      allow list: if isCashierAuthorized() && resource.data.category is string;
+      allow create: if isValidId(expenseId) && isCashierAuthorized() && isValidGenericEntity(incoming());
+      allow update: if isValidId(expenseId) && isCashierAuthorized() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if isValidId(expenseId) && isSuperAdmin();
+    }
+
+    // 29-31. Appointments, Documents, Notifications
+    match /appointments/{appointmentId} {
+      allow get: if isValidId(appointmentId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow create: if isValidId(appointmentId) && isStaffActive() && isValidGenericEntity(incoming());
+      allow update: if isValidId(appointmentId) && isStaffActive() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if isValidId(appointmentId) && isSuperAdmin();
+    }
+
+    match /documents/{documentId} {
+      allow get: if isValidId(documentId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.docType is string;
+      allow create: if isValidId(documentId) && isStaffActive() && isValidGenericEntity(incoming());
+      allow update: if isValidId(documentId) && isStaffActive() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if isValidId(documentId) && isSuperAdmin();
+    }
+
+    match /notifications/{notificationId} {
+      allow get: if isValidId(notificationId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.category is string;
+      allow create: if isValidId(notificationId) && isStaffActive() && isValidGenericEntity(incoming());
+      allow update: if isValidId(notificationId) && isStaffActive() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
+      allow delete: if isValidId(notificationId) && isSuperAdmin();
+    }
+
+    // 32. Immutable Audit Logs
+    match /audit_logs/{logId} {
+      allow get: if isValidId(logId) && isSuperAdmin();
+      allow list: if isSuperAdmin() && resource.data.action is string;
+      allow create: if isValidId(logId) && isStaffActive() && isValidAuditLog(incoming());
+      allow update, delete: if false;
+    }
+
+    // 33-35. System Settings, Integrations, Backups
+    match /system_settings/{settingId} {
+      allow get: if isValidId(settingId) && isStaffActive();
+      allow list: if isStaffActive() && resource.data.id is string;
+      allow create, update: if isValidId(settingId) && isSuperAdmin() && isValidGenericEntity(incoming());
+      allow delete: if false;
+    }
+
+    match /integrations/{integrationId} {
+      allow get: if isValidId(integrationId) && isSuperAdmin();
+      allow list: if isSuperAdmin() && resource.data.provider is string;
+      allow create, update: if isValidId(integrationId) && isSuperAdmin() && isValidGenericEntity(incoming());
+      allow delete: if isValidId(integrationId) && isSuperAdmin();
+    }
+
+    match /backups/{backupId} {
+      allow get: if isValidId(backupId) && isSuperAdmin();
+      allow list: if isSuperAdmin() && resource.data.label is string;
+      allow create: if isValidId(backupId) && isSuperAdmin() && isValidGenericEntity(incoming());
+      allow update, delete: if false;
+    }
+  }
+}

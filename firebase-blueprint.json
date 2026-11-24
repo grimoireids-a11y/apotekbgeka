@@ -1,0 +1,644 @@
+{
+  "entities": {
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Practice staff account with role assignment and E2EE key wrapping metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "username": { "type": "string", "maxLength": 64 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "role": { "type": "string", "enum": ["SUPER_ADMIN", "DOKTER_SPOG", "ASISTEN_DOKTER"] },
+        "strNumber": { "type": "string", "maxLength": 80 },
+        "sipNumber": { "type": "string", "maxLength": 80 },
+        "active": { "type": "boolean" },
+        "e2eeSalt": { "type": "string", "maxLength": 128 },
+        "e2eeWrappedKey": { "type": "string", "maxLength": 1024 },
+        "e2eeFingerprint": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "displayName", "role", "active", "createdAt", "createdBy", "updatedAt", "updatedBy"]
+    },
+    "RoleDefinition": {
+      "title": "RoleDefinition",
+      "description": "Role metadata and granular permission keys",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "name": { "type": "string", "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 400 },
+        "permissions": { "type": "array" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" }
+      },
+      "required": ["id", "name", "active", "createdAt", "createdBy", "updatedAt", "updatedBy"]
+    },
+    "PermissionDefinition": {
+      "title": "PermissionDefinition",
+      "description": "Individual granular access control capability",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 80 },
+        "module": { "type": "string", "maxLength": 64 },
+        "label": { "type": "string", "maxLength": 120 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" }
+      },
+      "required": ["id", "module", "label", "active"]
+    },
+    "PracticeSettings": {
+      "title": "PracticeSettings",
+      "description": "Practice identity, doctor credentials, operational hours, and numbering formats",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "practiceName": { "type": "string", "maxLength": 160 },
+        "doctorName": { "type": "string", "maxLength": 160 },
+        "doctorTitle": { "type": "string", "maxLength": 120 },
+        "strNumber": { "type": "string", "maxLength": 80 },
+        "sipNumber": { "type": "string", "maxLength": 80 },
+        "address": { "type": "string", "maxLength": 500 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "email": { "type": "string", "maxLength": 160 },
+        "logoUrl": { "type": "string", "maxLength": 2000 },
+        "operationalHours": { "type": "string", "maxLength": 300 },
+        "rmFormat": { "type": "string", "maxLength": 40 },
+        "visitFormat": { "type": "string", "maxLength": 40 },
+        "invoiceFormat": { "type": "string", "maxLength": 40 },
+        "receiptFormat": { "type": "string", "maxLength": 40 },
+        "rxFormat": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" }
+      },
+      "required": ["id", "practiceName", "updatedAt", "updatedBy"]
+    },
+    "Patient": {
+      "title": "Patient",
+      "description": "Patient master demographic and medical history record (sensitive fields E2EE-encrypted)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "rmNumber": { "type": "string", "maxLength": 40 },
+        "nik": { "type": "string", "maxLength": 512 },
+        "fullName": { "type": "string", "maxLength": 200 },
+        "birthPlace": { "type": "string", "maxLength": 120 },
+        "birthDate": { "type": "string", "maxLength": 20 },
+        "gender": { "type": "string", "enum": ["Perempuan", "Laki-laki"] },
+        "address": { "type": "string", "maxLength": 1000 },
+        "phone": { "type": "string", "maxLength": 512 },
+        "email": { "type": "string", "maxLength": 512 },
+        "occupation": { "type": "string", "maxLength": 120 },
+        "maritalStatus": { "type": "string", "maxLength": 40 },
+        "spouseName": { "type": "string", "maxLength": 200 },
+        "familyPhone": { "type": "string", "maxLength": 512 },
+        "emergencyContact": { "type": "string", "maxLength": 512 },
+        "bloodType": { "type": "string", "maxLength": 12 },
+        "allergies": { "type": "string", "maxLength": 2000 },
+        "medicalHistory": { "type": "string", "maxLength": 2000 },
+        "surgicalHistory": { "type": "string", "maxLength": 2000 },
+        "medicationHistory": { "type": "string", "maxLength": 2000 },
+        "consentGiven": { "type": "boolean" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" }
+      },
+      "required": ["id", "rmNumber", "fullName", "birthDate", "gender", "active", "createdAt", "createdBy", "updatedAt", "updatedBy"]
+    },
+    "PatientContact": {
+      "title": "PatientContact",
+      "description": "Emergency and guardian contacts linked to a patient",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 200 },
+        "relationship": { "type": "string", "maxLength": 64 },
+        "phone": { "type": "string", "maxLength": 512 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" }
+      },
+      "required": ["id", "patientId", "name", "active"]
+    },
+    "Visit": {
+      "title": "Visit",
+      "description": "Outpatient clinical visit encounter",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "visitNumber": { "type": "string", "maxLength": 40 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "doctorId": { "type": "string", "maxLength": 128 },
+        "visitType": { "type": "string", "maxLength": 80 },
+        "serviceCategory": { "type": "string", "maxLength": 80 },
+        "initialComplaint": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "enum": ["Terdaftar", "Menunggu", "Dipanggil", "Sedang Diperiksa", "Pemeriksaan Selesai", "Menunggu Pembayaran", "Selesai"] },
+        "paymentStatus": { "type": "string", "enum": ["Belum Dibayar", "Dibayar Sebagian", "Lunas", "Piutang", "Dibatalkan", "Dikembalikan"] },
+        "queueNumber": { "type": "string", "maxLength": 24 },
+        "visitDate": { "type": "string", "maxLength": 32 },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" }
+      },
+      "required": ["id", "visitNumber", "patientId", "visitType", "status", "paymentStatus", "visitDate"]
+    },
+    "QueueEntry": {
+      "title": "QueueEntry",
+      "description": "Real-time daily patient queue entry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "visitId": { "type": "string", "maxLength": 128 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "queueNumber": { "type": "string", "maxLength": 24 },
+        "status": { "type": "string", "maxLength": 40 },
+        "queueDate": { "type": "string", "maxLength": 20 },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" }
+      },
+      "required": ["id", "visitId", "patientId", "queueNumber", "status", "queueDate"]
+    },
+    "MedicalRecord": {
+      "title": "MedicalRecord",
+      "description": "Structured OBGYN Electronic Medical Record (RME) with signature and lock state",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "visitId": { "type": "string", "maxLength": 128 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "doctorId": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["draft", "signed", "locked"] },
+        "signedAt": { "type": "string", "maxLength": 40 },
+        "signedBy": { "type": "string", "maxLength": 160 },
+        "signatureHash": { "type": "string", "maxLength": 160 },
+        "version": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" }
+      },
+      "required": ["id", "visitId", "patientId", "status", "version"]
+    },
+    "MedicalRecordVersion": {
+      "title": "MedicalRecordVersion",
+      "description": "Immutable snapshot history of RME revisions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "medicalRecordId": { "type": "string", "maxLength": 128 },
+        "version": { "type": "number" },
+        "changeReason": { "type": "string", "maxLength": 400 },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "medicalRecordId", "version", "createdAt", "createdBy"]
+    },
+    "Pregnancy": {
+      "title": "Pregnancy",
+      "description": "Individual pregnancy episode tracked per patient",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "hpht": { "type": "string", "maxLength": 20 },
+        "hpl": { "type": "string", "maxLength": 20 },
+        "gravida": { "type": "number" },
+        "para": { "type": "number" },
+        "abortus": { "type": "number" },
+        "riskLevel": { "type": "string", "enum": ["Rendah", "Sedang", "Tinggi"] },
+        "status": { "type": "string", "enum": ["Aktif", "Lahir", "Keguguran", "Selesai"] },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" }
+      },
+      "required": ["id", "patientId", "hpht", "hpl", "gravida", "para", "abortus", "status"]
+    },
+    "AntenatalVisit": {
+      "title": "AntenatalVisit",
+      "description": "ANC visit metrics linked to a pregnancy episode",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "pregnancyId": { "type": "string", "maxLength": 128 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "visitDate": { "type": "string", "maxLength": 32 },
+        "gestationalAgeWeeks": { "type": "number" },
+        "weightKg": { "type": "number" },
+        "bloodPressure": { "type": "string", "maxLength": 24 },
+        "fundalHeightCm": { "type": "number" },
+        "fetalHeartRate": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "pregnancyId", "patientId", "visitDate", "gestationalAgeWeeks"]
+    },
+    "UltrasoundRecord": {
+      "title": "UltrasoundRecord",
+      "description": "Obstetric or gynecology USG examination report with biometry and verification",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "visitId": { "type": "string", "maxLength": 128 },
+        "examType": { "type": "string", "maxLength": 64 },
+        "verifiedByDoctor": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" }
+      },
+      "required": ["id", "patientId", "examType", "verifiedByDoctor"]
+    },
+    "DiagnosisRecord": {
+      "title": "DiagnosisRecord",
+      "description": "Patient diagnosis linked to ICD-10 code and medical record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "medicalRecordId": { "type": "string", "maxLength": 128 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "icd10Code": { "type": "string", "maxLength": 16 },
+        "description": { "type": "string", "maxLength": 300 },
+        "type": { "type": "string", "enum": ["Utama", "Sekunder", "Banding"] },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "medicalRecordId", "patientId", "icd10Code", "type"]
+    },
+    "Icd10Code": {
+      "title": "Icd10Code",
+      "description": "Configurable ICD-10 diagnosis master catalog",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 32 },
+        "code": { "type": "string", "maxLength": 16 },
+        "name": { "type": "string", "maxLength": 240 },
+        "category": { "type": "string", "maxLength": 80 },
+        "active": { "type": "boolean" }
+      },
+      "required": ["id", "code", "name", "active"]
+    },
+    "ProcedureRecord": {
+      "title": "ProcedureRecord",
+      "description": "Performed medical procedure linked to patient visit and billing",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "visitId": { "type": "string", "maxLength": 128 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "serviceId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 200 },
+        "price": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "visitId", "patientId", "name", "price"]
+    },
+    "ServiceTariff": {
+      "title": "ServiceTariff",
+      "description": "Medical service and procedure tariff catalog",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "code": { "type": "string", "maxLength": 32 },
+        "name": { "type": "string", "maxLength": 200 },
+        "category": { "type": "string", "maxLength": 80 },
+        "price": { "type": "number" },
+        "durationMinutes": { "type": "number" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["id", "code", "name", "category", "price", "active"]
+    },
+    "Medicine": {
+      "title": "Medicine",
+      "description": "Pharmacy medicine catalog with inventory and expiry tracking",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "code": { "type": "string", "maxLength": 32 },
+        "name": { "type": "string", "maxLength": 200 },
+        "genericName": { "type": "string", "maxLength": 200 },
+        "price": { "type": "number" },
+        "stock": { "type": "number" },
+        "expiryDate": { "type": "string", "maxLength": 20 },
+        "active": { "type": "boolean" }
+      },
+      "required": ["id", "code", "name", "price", "stock", "active"]
+    },
+    "Prescription": {
+      "title": "Prescription",
+      "description": "Doctor-authorized electronic prescription",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "rxNumber": { "type": "string", "maxLength": 40 },
+        "visitId": { "type": "string", "maxLength": 128 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "doctorId": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["Draft", "Disahkan Dokter", "Disiapkan", "Diserahkan"] },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "rxNumber", "visitId", "patientId", "status"]
+    },
+    "LaboratoryOrder": {
+      "title": "LaboratoryOrder",
+      "description": "Doctor-ordered laboratory test request",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "visitId": { "type": "string", "maxLength": 128 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["Diminta", "Proses", "Selesai"] },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "visitId", "patientId", "status"]
+    },
+    "LaboratoryResult": {
+      "title": "LaboratoryResult",
+      "description": "Recorded lab test value with unit, reference range, and examiner metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "testName": { "type": "string", "maxLength": 160 },
+        "resultValue": { "type": "string", "maxLength": 200 },
+        "unit": { "type": "string", "maxLength": 40 },
+        "referenceRange": { "type": "string", "maxLength": 80 },
+        "examinerName": { "type": "string", "maxLength": 160 },
+        "examinedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "orderId", "patientId", "testName", "resultValue"]
+    },
+    "Invoice": {
+      "title": "Invoice",
+      "description": "Patient billing header generated from clinical services",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "invoiceNumber": { "type": "string", "maxLength": 40 },
+        "visitId": { "type": "string", "maxLength": 128 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "subtotal": { "type": "number" },
+        "discount": { "type": "number" },
+        "total": { "type": "number" },
+        "paidAmount": { "type": "number" },
+        "remainingAmount": { "type": "number" },
+        "status": { "type": "string", "enum": ["Belum Dibayar", "Dibayar Sebagian", "Lunas", "Piutang", "Dibatalkan", "Dikembalikan"] },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "invoiceNumber", "visitId", "patientId", "total", "status"]
+    },
+    "InvoiceItem": {
+      "title": "InvoiceItem",
+      "description": "Individual billable item linked to an invoice",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "invoiceId": { "type": "string", "maxLength": 128 },
+        "category": { "type": "string", "maxLength": 64 },
+        "description": { "type": "string", "maxLength": 240 },
+        "qty": { "type": "number" },
+        "unitPrice": { "type": "number" },
+        "total": { "type": "number" }
+      },
+      "required": ["id", "invoiceId", "description", "qty", "unitPrice", "total"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Immutable payment transaction and receipt reference",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "receiptNumber": { "type": "string", "maxLength": 40 },
+        "invoiceId": { "type": "string", "maxLength": 128 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "amount": { "type": "number" },
+        "method": { "type": "string", "maxLength": 40 },
+        "status": { "type": "string", "enum": ["Sukses", "Dibatalkan", "Dikembalikan"] },
+        "cashierName": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "receiptNumber", "invoiceId", "amount", "method", "status"]
+    },
+    "Refund": {
+      "title": "Refund",
+      "description": "Payment refund request requiring Super Admin authorization",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "paymentId": { "type": "string", "maxLength": 128 },
+        "invoiceId": { "type": "string", "maxLength": 128 },
+        "amount": { "type": "number" },
+        "reason": { "type": "string", "maxLength": 400 },
+        "status": { "type": "string", "enum": ["Menunggu Persetujuan", "Disetujui", "Ditolak"] },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "paymentId", "amount", "reason", "status"]
+    },
+    "CashSession": {
+      "title": "CashSession",
+      "description": "Daily cashier drawer open/close session with variance audit",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "sessionDate": { "type": "string", "maxLength": 20 },
+        "openingBalance": { "type": "number" },
+        "expectedBalance": { "type": "number" },
+        "actualClosingBalance": { "type": "number" },
+        "variance": { "type": "number" },
+        "status": { "type": "string", "enum": ["Terbuka", "Ditutup"] },
+        "openedBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "sessionDate", "openingBalance", "status", "openedBy"]
+    },
+    "CashTransaction": {
+      "title": "CashTransaction",
+      "description": "Cash-in or cash-out ledger movement",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["Masuk", "Keluar"] },
+        "category": { "type": "string", "maxLength": 80 },
+        "amount": { "type": "number" },
+        "description": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "type", "amount", "description"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Practice operational expense record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "category": { "type": "string", "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 300 },
+        "amount": { "type": "number" },
+        "expenseDate": { "type": "string", "maxLength": 20 },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "category", "amount", "expenseDate"]
+    },
+    "Appointment": {
+      "title": "Appointment",
+      "description": "Scheduled practice appointment or ANC follow-up control",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "doctorId": { "type": "string", "maxLength": 128 },
+        "scheduledDate": { "type": "string", "maxLength": 20 },
+        "scheduledTime": { "type": "string", "maxLength": 16 },
+        "status": { "type": "string", "enum": ["Terjadwal", "Hadir", "Dijadwalkan Ulang", "Dibatalkan"] },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "patientId", "scheduledDate", "status"]
+    },
+    "DocumentRecord": {
+      "title": "DocumentRecord",
+      "description": "Digital clinical or administrative document metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "patientId": { "type": "string", "maxLength": 128 },
+        "docType": { "type": "string", "maxLength": 64 },
+        "title": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "docType", "title"]
+    },
+    "NotificationItem": {
+      "title": "NotificationItem",
+      "description": "Internal practice operational or clinical alert",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "category": { "type": "string", "maxLength": 48 },
+        "title": { "type": "string", "maxLength": 160 },
+        "message": { "type": "string", "maxLength": 500 },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "category", "title", "read", "createdAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable security and clinical activity audit trail",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "userName": { "type": "string", "maxLength": 160 },
+        "role": { "type": "string", "maxLength": 40 },
+        "action": { "type": "string", "maxLength": 120 },
+        "entity": { "type": "string", "maxLength": 80 },
+        "entityId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "role", "action", "entity", "createdAt"]
+    },
+    "SystemSetting": {
+      "title": "SystemSetting",
+      "description": "Security policy, password policy, retention policy, and document templates",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" }
+      },
+      "required": ["id", "updatedAt", "updatedBy"]
+    },
+    "IntegrationConfig": {
+      "title": "IntegrationConfig",
+      "description": "External API integration configs (SATUSEHAT FHIR, WhatsApp)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "provider": { "type": "string", "maxLength": 64 },
+        "enabled": { "type": "boolean" },
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" }
+      },
+      "required": ["id", "provider", "enabled"]
+    },
+    "BackupRecord": {
+      "title": "BackupRecord",
+      "description": "Metadata for encrypted database backup snapshots",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "label": { "type": "string", "maxLength": 160 },
+        "encrypted": { "type": "boolean" },
+        "recordCount": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "label", "encrypted", "createdAt", "createdBy"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": { "schema": { "$ref": "#/entities/UserAccount" }, "description": "Staff accounts and E2EE wrapped keys" },
+    "/roles/{roleId}": { "schema": { "$ref": "#/entities/RoleDefinition" }, "description": "RBAC role definitions" },
+    "/permissions/{permissionId}": { "schema": { "$ref": "#/entities/PermissionDefinition" }, "description": "Granular permissions catalog" },
+    "/practice_settings/{settingId}": { "schema": { "$ref": "#/entities/PracticeSettings" }, "description": "Practice profile and numbering settings" },
+    "/patients/{patientId}": { "schema": { "$ref": "#/entities/Patient" }, "description": "Patient records (E2EE protected)" },
+    "/patient_contacts/{contactId}": { "schema": { "$ref": "#/entities/PatientContact" }, "description": "Patient emergency contacts" },
+    "/visits/{visitId}": { "schema": { "$ref": "#/entities/Visit" }, "description": "Outpatient clinical visits" },
+    "/queues/{queueId}": { "schema": { "$ref": "#/entities/QueueEntry" }, "description": "Real-time daily patient queues" },
+    "/medical_records/{recordId}": { "schema": { "$ref": "#/entities/MedicalRecord" }, "description": "Electronic medical records (RME)" },
+    "/medical_record_versions/{versionId}": { "schema": { "$ref": "#/entities/MedicalRecordVersion" }, "description": "Immutable RME version history" },
+    "/pregnancies/{pregnancyId}": { "schema": { "$ref": "#/entities/Pregnancy" }, "description": "Pregnancy episodes per patient" },
+    "/antenatal_visits/{ancId}": { "schema": { "$ref": "#/entities/AntenatalVisit" }, "description": "ANC visit metrics and timeline" },
+    "/ultrasound_records/{usgId}": { "schema": { "$ref": "#/entities/UltrasoundRecord" }, "description": "Obstetric and gynecology USG records" },
+    "/diagnoses/{diagnosisId}": { "schema": { "$ref": "#/entities/DiagnosisRecord" }, "description": "Clinical diagnoses per visit" },
+    "/icd10_codes/{codeId}": { "schema": { "$ref": "#/entities/Icd10Code" }, "description": "Configurable ICD-10 diagnosis codes" },
+    "/procedures/{procedureId}": { "schema": { "$ref": "#/entities/ProcedureRecord" }, "description": "Performed clinical procedures" },
+    "/services/{serviceId}": { "schema": { "$ref": "#/entities/ServiceTariff" }, "description": "Service and tariff catalog" },
+    "/medicines/{medicineId}": { "schema": { "$ref": "#/entities/Medicine" }, "description": "Medicine and pharmacy inventory" },
+    "/prescriptions/{rxId}": { "schema": { "$ref": "#/entities/Prescription" }, "description": "Doctor-authorized prescriptions" },
+    "/laboratory_orders/{orderId}": { "schema": { "$ref": "#/entities/LaboratoryOrder" }, "description": "Laboratory test orders" },
+    "/laboratory_results/{resultId}": { "schema": { "$ref": "#/entities/LaboratoryResult" }, "description": "Laboratory test results" },
+    "/invoices/{invoiceId}": { "schema": { "$ref": "#/entities/Invoice" }, "description": "Patient billing invoices" },
+    "/invoice_items/{itemId}": { "schema": { "$ref": "#/entities/InvoiceItem" }, "description": "Itemized invoice line items" },
+    "/payments/{paymentId}": { "schema": { "$ref": "#/entities/Payment" }, "description": "Payment receipts and transactions" },
+    "/refunds/{refundId}": { "schema": { "$ref": "#/entities/Refund" }, "description": "Refund requests requiring Super Admin approval" },
+    "/cash_sessions/{sessionId}": { "schema": { "$ref": "#/entities/CashSession" }, "description": "Daily cash register open/close sessions" },
+    "/cash_transactions/{txId}": { "schema": { "$ref": "#/entities/CashTransaction" }, "description": "Cash-in and cash-out entries" },
+    "/expenses/{expenseId}": { "schema": { "$ref": "#/entities/Expense" }, "description": "Operational expenses" },
+    "/appointments/{appointmentId}": { "schema": { "$ref": "#/entities/Appointment" }, "description": "Scheduled appointments and ANC controls" },
+    "/documents/{documentId}": { "schema": { "$ref": "#/entities/DocumentRecord" }, "description": "Digital clinical and administrative documents" },
+    "/notifications/{notificationId}": { "schema": { "$ref": "#/entities/NotificationItem" }, "description": "Internal practice notifications" },
+    "/audit_logs/{logId}": { "schema": { "$ref": "#/entities/AuditLog" }, "description": "Immutable security and activity audit logs" },
+    "/system_settings/{settingId}": { "schema": { "$ref": "#/entities/SystemSetting" }, "description": "System security and template settings" },
+    "/integrations/{integrationId}": { "schema": { "$ref": "#/entities/IntegrationConfig" }, "description": "SATUSEHAT FHIR and WhatsApp integration settings" },
+    "/backups/{backupId}": { "schema": { "$ref": "#/entities/BackupRecord" }, "description": "Database backup snapshot metadata" }
+  }
+}
