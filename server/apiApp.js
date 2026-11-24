@@ -3,16 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
-import type { Request, Response, NextFunction } from 'express';
 import dotenv from 'dotenv';
-import type { AuditLog, CollectionName, PracticeDatabase, RoleCode, UserAccount } from '../src/types/models.ts';
-import { createEmptyDatabase } from '../src/data/defaults.ts';
 
 dotenv.config();
 
 const IS_VERCEL = process.env.VERCEL === '1' || Boolean(process.env.VERCEL_ENV);
 
-function resolveWritableDataDir(): string {
+function resolveWritableDataDir() {
   if (IS_VERCEL) {
     return path.join(os.tmpdir(), 'obgyn-practice-data');
   }
@@ -33,14 +30,14 @@ const DB_FILE = path.join(DATA_DIR, 'practice-db.json');
 const CRED_FILE = path.join(DATA_DIR, 'auth-credentials.json');
 
 /**
- * Resolve session signing key:
+ * Resolve session signing secret:
  * 1. Explicit SESSION_SECRET env var (recommended in Vercel / production Secrets).
  * 2. On Vercel serverless when SESSION_SECRET is unset, derive a per-deployment key
- *    from Vercel's runtime deployment metadata so multiple serverless instances of the
+ *    from Vercel runtime deployment metadata so multiple serverless instances of the
  *    same deployment verify Bearer tokens consistently without hardcoding any secret.
  * 3. Local/single-node fallback: cryptographically random 32-byte in-memory key.
  */
-function resolveSessionSecret(): string {
+function resolveSessionSecret() {
   if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.trim().length >= 16) {
     return process.env.SESSION_SECRET.trim();
   }
@@ -59,34 +56,348 @@ function resolveSessionSecret(): string {
 
 const SESSION_SECRET = resolveSessionSecret();
 
-interface StoredCredential {
-  userId: string;
-  username: string;
-  passwordSalt: string;
-  passwordHash: string;
-  e2eeSalt: string;
-  e2eeWrappedKey: string;
-  e2eeFingerprint: string;
-  keyVersion: number;
+const PERMISSION_CATALOG = [
+  { key: 'dashboard.all', module: 'Dashboard', label: 'Lihat seluruh metrik dashboard praktik' },
+  { key: 'patients.read', module: 'Pasien', label: 'Melihat data pasien' },
+  { key: 'patients.register', module: 'Pasien', label: 'Mendaftarkan & mengedit administrasi pasien' },
+  { key: 'patients.delete', module: 'Pasien', label: 'Menghapus/menonaktifkan pasien sesuai retensi' },
+  { key: 'visits.manage', module: 'Kunjungan & Antrean', label: 'Kelola pendaftaran kunjungan & antrean' },
+  { key: 'vitals.initial', module: 'Kunjungan & Antrean', label: 'Input tanda vital awal pasien' },
+  { key: 'rme.read', module: 'Rekam Medis', label: 'Membaca riwayat rekam medis elektronik' },
+  { key: 'rme.write', module: 'Rekam Medis', label: 'Mengisi anamnesis, pemeriksaan fisik, obstetri, ginekologi & diagnosis' },
+  { key: 'rme.sign_lock', module: 'Rekam Medis', label: 'Menandatangani & mengunci rekam medis dokter' },
+  { key: 'pregnancy.manage', module: 'Kehamilan & USG', label: 'Mengelola data kehamilan, ANC & hasil USG' },
+  { key: 'procedures.order', module: 'Tindakan Medis', label: 'Mencatat & menginstruksikan tindakan medis' },
+  { key: 'procedures.admin', module: 'Tindakan Medis', label: 'Administrasi tindakan sesuai instruksi dokter' },
+  { key: 'prescriptions.write', module: 'Resep & Obat', label: 'Membuat & mengesahkan resep obat dokter' },
+  { key: 'prescriptions.dispense', module: 'Resep & Obat', label: 'Administrasi resep & penyerahan obat' },
+  { key: 'lab.order', module: 'Laboratorium', label: 'Membuat permintaan pemeriksaan laboratorium' },
+  { key: 'lab.results', module: 'Laboratorium', label: 'Input & administrasi hasil laboratorium' },
+  { key: 'documents.medical', module: 'Dokumen', label: 'Membuat surat keterangan medis & surat rujukan' },
+  { key: 'schedule.manage', module: 'Jadwal & Kontrol', label: 'Mengatur jadwal praktik & pengingat kontrol' },
+  { key: 'cashier.operate', module: 'Kasir & Keuangan', label: 'Mengelola tagihan, kasir, kuitansi, piutang & kas harian' },
+  { key: 'cashier.refund_approve', module: 'Kasir & Keuangan', label: 'Menyetujui pengembalian dana (refund)' },
+  { key: 'reports.medical', module: 'Laporan', label: 'Mengakses laporan pelayanan & statistik medis' },
+  { key: 'reports.finance', module: 'Laporan', label: 'Mengakses laporan keuangan & transaksi' },
+  { key: 'settings.practice', module: 'Pengaturan', label: 'Mengubah identitas praktik, tarif & template dokumen' },
+  { key: 'settings.users', module: 'Pengaturan', label: 'Mengelola akun pengguna, role & hak akses' },
+  { key: 'settings.security', module: 'Pengaturan', label: 'Mengakses audit log, integrasi API, E2EE & backup' }
+];
+
+const DEFAULT_ROLE_PERMISSIONS = {
+  SUPER_ADMIN: PERMISSION_CATALOG.map((p) => p.key),
+  DOKTER_SPOG: [
+    'patients.read',
+    'visits.manage',
+    'vitals.initial',
+    'rme.read',
+    'rme.write',
+    'rme.sign_lock',
+    'pregnancy.manage',
+    'procedures.order',
+    'prescriptions.write',
+    'lab.order',
+    'lab.results',
+    'documents.medical',
+    'reports.medical'
+  ],
+  ASISTEN_DOKTER: [
+    'patients.read',
+    'patients.register',
+    'visits.manage',
+    'vitals.initial',
+    'rme.read',
+    'procedures.admin',
+    'prescriptions.dispense',
+    'lab.results',
+    'schedule.manage',
+    'cashier.operate',
+    'reports.finance'
+  ]
+};
+
+function createEmptyServerDatabase() {
+  const NOW = new Date().toISOString();
+  const icdRows = [
+    ['Z34.0', 'Supervisi kehamilan normal pertama (ANC Primigravida)', 'Obstetri'],
+    ['Z34.8', 'Supervisi kehamilan normal lainnya (ANC Multigravida)', 'Obstetri'],
+    ['O20.0', 'Abortus imminens (Threatened abortion)', 'Obstetri'],
+    ['O21.0', 'Hiperemesis gravidarum ringan', 'Obstetri'],
+    ['O14.0', 'Preeklampsia ringan sampai sedang', 'Obstetri'],
+    ['O14.1', 'Preeklampsia berat', 'Obstetri'],
+    ['O24.4', 'Diabetes melitus gestasional dalam kehamilan', 'Obstetri'],
+    ['O42.9', 'Ketuban pecah dini (KPD), tidak spesifik', 'Obstetri'],
+    ['O44.1', 'Plasenta previa dengan perdarahan', 'Obstetri'],
+    ['O80.0', 'Persalinan tunggal spontan presentasi kepala', 'Obstetri'],
+    ['O99.0', 'Anemia yang menyulitkan kehamilan', 'Obstetri'],
+    ['N80.0', 'Endometriosis uterus (Adenomiosis)', 'Ginekologi'],
+    ['D25.9', 'Leiomioma uterus (Mioma uteri), tidak spesifik', 'Ginekologi'],
+    ['E28.2', 'Sindrom ovarium polikistik (PCOS)', 'Ginekologi'],
+    ['N83.2', 'Kista ovarium lainnya dan tidak spesifik', 'Ginekologi'],
+    ['N76.0', 'Vaginitis akut / Keputihan patologis', 'Ginekologi'],
+    ['N92.0', 'Menstruasi berlebihan dan sering dengan siklus teratur', 'Ginekologi'],
+    ['Z30.0', 'Konseling umum dan edukasi kontrasepsi (KB)', 'Keluarga Berencana']
+  ];
+
+  const serviceRows = [
+    ['SRV-KONSUL', 'Konsultasi Dokter Spesialis Sp.OG', 'Konsultasi', 250000, 20, 'Konsultasi klinis obstetri/ginekologi bersama dokter Sp.OG'],
+    ['SRV-ANC', 'Pemeriksaan Antenatal Care (ANC)', 'Obstetri', 200000, 20, 'Pemeriksaan rutin kehamilan lengkap (TFU, DJJ, Leopold, edukasi)'],
+    ['SRV-USG2D', 'USG Obstetri / Ginekologi 2D', 'USG', 250000, 15, 'Ultrasonografi biometri 2D dengan cetak laporan USG'],
+    ['SRV-USG4D', 'USG Fetomaternal 3D/4D HD Live', 'USG', 550000, 30, 'Ultrasonografi skrining detail anatomi janin 3D/4D'],
+    ['SRV-USGTV', 'USG Transvaginal', 'USG', 325000, 20, 'Pemeriksaan ultrasonografi transvaginal ginekologi / kehamilan awal'],
+    ['SRV-GIN', 'Pemeriksaan Ginekologi Inspekulo & Bimanual', 'Ginekologi', 225000, 20, 'Evaluasi klinis organ reproduksi dan serviks'],
+    ['SRV-PAP', 'Tindakan Pap Smear (LBC)', 'Tindakan', 375000, 20, 'Pengambilan sampel sitologi serviks untuk skrining dini'],
+    ['SRV-IVA', 'Pemeriksaan IVA Test', 'Tindakan', 150000, 15, 'Inspeksi Visual Asam Asetat skrining serviks'],
+    ['SRV-IUD-IN', 'Pemasangan Kontrasepsi IUD', 'Tindakan', 650000, 30, 'Pemasangan AKDR steril termasuk kontrol posisi USG'],
+    ['SRV-IUD-OUT', 'Pelepasan Kontrasepsi IUD', 'Tindakan', 300000, 15, 'Pelepasan AKDR steril dengan evaluasi klinis'],
+    ['SRV-ADM', 'Biaya Administrasi & Rekam Medis', 'Administrasi', 35000, 5, 'Biaya administrasi kunjungan rawat jalan']
+  ];
+
+  const medRows = [
+    ['OBT-001', 'Folamil Genio', 'Asam Folat + DHA + Multivitamin', 'Dexa Medica', 'Kapsul Lunak', '1000 mcg', 'Kapsul', 5500, 180, '2027-08-31'],
+    ['OBT-002', 'Ferrous Sulfate 200mg', 'Ferrous Sulfate', 'Generik', 'Tablet Salut', '200 mg', 'Tablet', 1500, 240, '2027-06-30'],
+    ['OBT-003', 'Calcium Lactate 500mg', 'Calcium Lactate', 'Generik', 'Tablet', '500 mg', 'Tablet', 1200, 300, '2027-10-31'],
+    ['OBT-004', 'Utrogestan 200mg', 'Micronized Progesterone', 'Besins', 'Kapsul Lunak', '200 mg', 'Kapsul', 28000, 90, '2027-04-30'],
+    ['OBT-005', 'Duphaston 10mg', 'Dydrogesterone', 'Abbott', 'Tablet', '10 mg', 'Tablet', 24500, 110, '2027-09-30'],
+    ['OBT-006', 'Nifedipine 10mg', 'Nifedipine', 'Generik', 'Tablet', '10 mg', 'Tablet', 1800, 140, '2027-05-31'],
+    ['OBT-007', 'Methyldopa 250mg', 'Methyldopa', 'Dopamet', 'Tablet', '250 mg', 'Tablet', 4200, 120, '2027-07-31'],
+    ['OBT-008', 'Asam Mefenamat 500mg', 'Asam Mefenamat', 'Generik', 'Kaplet', '500 mg', 'Kaplet', 1500, 200, '2027-11-30'],
+    ['OBT-009', 'Amoxicillin 500mg', 'Amoxicillin', 'Generik', 'Kaplet', '500 mg', 'Kaplet', 2500, 160, '2027-03-31'],
+    ['OBT-010', 'Metronidazole Ovula 500mg', 'Metronidazole', 'Flagystatin', 'Ovula', '500 mg', 'Ovula', 22000, 48, '2027-06-15']
+  ];
+
+  return {
+    users: [],
+    roles: [
+      {
+        id: 'role-super-admin',
+        code: 'SUPER_ADMIN',
+        name: 'Super Admin',
+        description: 'Kewenangan penuh terhadap manajemen sistem, pengguna, hak akses, tarif, keuangan, backup, dan audit log.',
+        permissions: DEFAULT_ROLE_PERMISSIONS.SUPER_ADMIN,
+        active: true,
+        createdAt: NOW,
+        createdBy: 'system',
+        updatedAt: NOW,
+        updatedBy: 'system'
+      },
+      {
+        id: 'role-dokter',
+        code: 'DOKTER_SPOG',
+        name: 'Dokter Sp.OG',
+        description: 'Kewenangan penuh pelayanan medis, RME, obstetri, ginekologi, kehamilan, USG, resep, surat keterangan & rujukan.',
+        permissions: DEFAULT_ROLE_PERMISSIONS.DOKTER_SPOG,
+        active: true,
+        createdAt: NOW,
+        createdBy: 'system',
+        updatedAt: NOW,
+        updatedBy: 'system'
+      },
+      {
+        id: 'role-asisten',
+        code: 'ASISTEN_DOKTER',
+        name: 'Asisten Dokter',
+        description: 'Kewenangan pendaftaran pasien, antrean, tanda vital awal, administrasi resep/lab, jadwal kontrol, kasir & keuangan harian.',
+        permissions: DEFAULT_ROLE_PERMISSIONS.ASISTEN_DOKTER,
+        active: true,
+        createdAt: NOW,
+        createdBy: 'system',
+        updatedAt: NOW,
+        updatedBy: 'system'
+      }
+    ],
+    permissions: PERMISSION_CATALOG.map((p) => ({
+      id: `perm-${p.key.replace('.', '-')}`,
+      key: p.key,
+      module: p.module,
+      label: p.label,
+      active: true,
+      createdAt: NOW,
+      createdBy: 'system',
+      updatedAt: NOW,
+      updatedBy: 'system'
+    })),
+    practice_settings: [
+      {
+        id: 'main',
+        practiceName: 'OBGYN PRACTICE MANAGEMENT SYSTEM',
+        doctorName: 'dr. Kartika Wulandari',
+        doctorTitle: 'Sp.OG (K)',
+        strNumber: '31.2.1.301.4.23.189402',
+        sipNumber: '446/SIP-SpOG/2025/0142',
+        address: 'Jl. Kesehatan Raya No. 48, Kebayoran Baru, Jakarta Selatan 12160',
+        phone: '(021) 720-4891 / 0811-9482-001',
+        email: 'praktik.obgyn@klinikspog.id',
+        logoUrl: '/src/assets/images/practice_logo_mark_1795522062108.jpg',
+        operationalHours: 'Senin - Jumat: 09:00 - 20:00 WIB | Sabtu: 09:00 - 15:00 WIB',
+        rmFormat: 'RM',
+        visitFormat: 'VIS',
+        invoiceFormat: 'INV',
+        receiptFormat: 'KWT',
+        rxFormat: 'RX',
+        taxRatePercent: 0,
+        defaultDiscountPercent: 0,
+        active: true,
+        createdAt: NOW,
+        createdBy: 'system',
+        updatedAt: NOW,
+        updatedBy: 'system'
+      }
+    ],
+    patients: [],
+    patient_contacts: [],
+    visits: [],
+    queues: [],
+    medical_records: [],
+    medical_record_versions: [],
+    pregnancies: [],
+    antenatal_visits: [],
+    ultrasound_records: [],
+    diagnoses: [],
+    icd10_codes: icdRows.map(([code, name, category]) => ({
+      id: `icd-${code.replace('.', '-')}`,
+      code,
+      name,
+      category,
+      active: true,
+      createdAt: NOW,
+      createdBy: 'system',
+      updatedAt: NOW,
+      updatedBy: 'system'
+    })),
+    procedures: [],
+    services: serviceRows.map(([code, name, category, price, durationMinutes, description]) => ({
+      id: `srv-${String(code).toLowerCase()}`,
+      code,
+      name,
+      category,
+      price,
+      durationMinutes,
+      description,
+      active: true,
+      createdAt: NOW,
+      createdBy: 'system',
+      updatedAt: NOW,
+      updatedBy: 'system'
+    })),
+    medicines: medRows.map(([code, name, genericName, brand, dosageForm, strength, unit, price, stock, expiryDate]) => ({
+      id: `med-${String(code).toLowerCase()}`,
+      code,
+      name,
+      genericName,
+      brand,
+      dosageForm,
+      strength,
+      unit,
+      price,
+      stock,
+      expiryDate,
+      active: true,
+      createdAt: NOW,
+      createdBy: 'system',
+      updatedAt: NOW,
+      updatedBy: 'system'
+    })),
+    prescriptions: [],
+    laboratory_orders: [],
+    laboratory_results: [],
+    invoices: [],
+    invoice_items: [],
+    payments: [],
+    refunds: [],
+    cash_sessions: [],
+    cash_transactions: [],
+    expenses: [],
+    appointments: [],
+    documents: [],
+    notifications: [],
+    audit_logs: [],
+    system_settings: [
+      {
+        id: 'main',
+        passwordMinLength: 8,
+        sessionTimeoutMinutes: 60,
+        maxLoginAttempts: 5,
+        dataRetentionYears: 5,
+        autoBackupEnabled: true,
+        e2eeRequired: true,
+        e2eeKeyVersion: 1,
+        e2eeKeyFingerprint: 'INISIALISASI',
+        scheduleSlots: [
+          { dayOfWeek: 'Senin', startTime: '09:00', endTime: '14:00', doctorId: 'usr-dokter', doctorName: 'dr. Kartika Wulandari, Sp.OG (K)', quota: 20, active: true },
+          { dayOfWeek: 'Senin', startTime: '16:00', endTime: '20:00', doctorId: 'usr-dokter', doctorName: 'dr. Kartika Wulandari, Sp.OG (K)', quota: 15, active: true },
+          { dayOfWeek: 'Selasa', startTime: '09:00', endTime: '14:00', doctorId: 'usr-dokter', doctorName: 'dr. Kartika Wulandari, Sp.OG (K)', quota: 20, active: true },
+          { dayOfWeek: 'Rabu', startTime: '09:00', endTime: '15:00', doctorId: 'usr-dokter', doctorName: 'dr. Kartika Wulandari, Sp.OG (K)', quota: 20, active: true },
+          { dayOfWeek: 'Kamis', startTime: '15:00', endTime: '20:00', doctorId: 'usr-dokter', doctorName: 'dr. Kartika Wulandari, Sp.OG (K)', quota: 18, active: true },
+          { dayOfWeek: 'Jumat', startTime: '09:00', endTime: '14:00', doctorId: 'usr-dokter', doctorName: 'dr. Kartika Wulandari, Sp.OG (K)', quota: 18, active: true },
+          { dayOfWeek: 'Sabtu', startTime: '09:00', endTime: '15:00', doctorId: 'usr-dokter', doctorName: 'dr. Kartika Wulandari, Sp.OG (K)', quota: 25, active: true }
+        ],
+        templates: {
+          kuitansiFooter: 'Terima kasih atas kepercayaan Anda. Kuitansi ini merupakan bukti pembayaran sah dari praktik dokter spesialis.',
+          resepHeaderNote: 'Resep elektronik sah sesuai Permenkes No. 24 Tahun 2022. Tidak dapat digandakan tanpa verifikasi dokter.',
+          usgDisclaimer: 'Hasil pemeriksaan ultrasonografi merupakan interpretasi klinis pada saat pemeriksaan dilakukan dan perlu dikorelasikan dengan kondisi klinis pasien.',
+          suratKeteranganBody: 'Berdasarkan hasil pemeriksaan medis obstetri dan ginekologi yang telah dilakukan, yang bersangkutan dinyatakan dalam kondisi sesuai keterangan klinis di bawah ini.',
+          suratRujukanHeader: 'Kepada Yth. Rekan Sejawat Dokter Spesialis / Instalasi Gawat Darurat Rumah Sakit Rujukan',
+          laporanFooter: 'Dokumen Rahasia Medis & Operasional — Dilindungi UU No. 27 Tahun 2022 tentang Pelindungan Data Pribadi.'
+        },
+        active: true,
+        createdAt: NOW,
+        createdBy: 'system',
+        updatedAt: NOW,
+        updatedBy: 'system'
+      }
+    ],
+    integrations: [
+      {
+        id: 'int-satusehat',
+        provider: 'SATUSEHAT_FHIR',
+        name: 'SATUSEHAT Kemenkes RI (HL7 FHIR R4)',
+        endpointUrl: 'https://api-satusehat-stg.dto.kemkes.go.id/fhir-r4/v1',
+        organizationId: 'ORG-SPOG-STAGING-001',
+        clientId: '',
+        enabled: false,
+        statusNote: 'Siap dikembangkan & diintegrasikan (mode staging — belum tersertifikasi produksi sebelum verifikasi Kemenkes).',
+        createdAt: NOW,
+        createdBy: 'system',
+        updatedAt: NOW,
+        updatedBy: 'system'
+      },
+      {
+        id: 'int-whatsapp',
+        provider: 'WHATSAPP_API',
+        name: 'WhatsApp Business Official API (Pengingat Kontrol)',
+        endpointUrl: 'https://graph.facebook.com/v20.0',
+        senderNumber: '+628119482001',
+        enabled: false,
+        statusNote: 'Integrasi pengingat jadwal ANC & kontrol ulang otomatis saat kredensial penyedia API resmi aktif.',
+        createdAt: NOW,
+        createdBy: 'system',
+        updatedAt: NOW,
+        updatedBy: 'system'
+      },
+      {
+        id: 'int-firebase',
+        provider: 'FIREBASE_CLOUD',
+        name: 'Firebase Cloud Firestore & Authentication',
+        endpointUrl: 'firestore.googleapis.com',
+        enabled: true,
+        statusNote: 'Database Cloud Firestore & Security Rules aktif; hubungkan akun Google untuk sinkronisasi cloud langsung.',
+        createdAt: NOW,
+        createdBy: 'system',
+        updatedAt: NOW,
+        updatedBy: 'system'
+      }
+    ],
+    backups: []
+  };
 }
 
-interface SessionPayload {
-  userId: string;
-  username: string;
-  displayName: string;
-  role: RoleCode;
-  exp: number;
-}
-
-interface AuthedRequest extends Request {
-  session?: SessionPayload;
-}
-
-const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+const VALID_COLLECTIONS = new Set(Object.keys(createEmptyServerDatabase()));
+const loginAttempts = new Map();
 const MAX_ATTEMPTS = 8;
 const WINDOW_MS = 15 * 60 * 1000;
 
-function ensureDataDir(): boolean {
+function ensureDataDir() {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -97,13 +408,13 @@ function ensureDataDir(): boolean {
   }
 }
 
-function hashPassword(password: string, saltHex?: string): { salt: string; hash: string } {
+function hashPassword(password, saltHex) {
   const salt = saltHex || crypto.randomBytes(16).toString('hex');
   const derived = crypto.scryptSync(password, salt, 64).toString('hex');
   return { salt, hash: derived };
 }
 
-function verifyPassword(password: string, salt: string, expectedHash: string): boolean {
+function verifyPassword(password, salt, expectedHash) {
   const actual = crypto.scryptSync(password, salt, 64);
   const expected = Buffer.from(expectedHash, 'hex');
   if (actual.length !== expected.length) return false;
@@ -113,7 +424,7 @@ function verifyPassword(password: string, salt: string, expectedHash: string): b
 /**
  * Derive a 256-bit AES-GCM KEK using PBKDF2-SHA256 (100,000 iterations) — matches browser Web Crypto subtle.deriveKey.
  */
-function wrapVaultKeyNode(vaultKeyRaw: Buffer, passphrase: string, saltBase64: string): string {
+function wrapVaultKeyNode(vaultKeyRaw, passphrase, saltBase64) {
   const saltBuf = Buffer.from(saltBase64, 'base64');
   const kek = crypto.pbkdf2Sync(passphrase, saltBuf, 100000, 32, 'sha256');
   const iv = crypto.randomBytes(12);
@@ -127,7 +438,7 @@ function wrapVaultKeyNode(vaultKeyRaw: Buffer, passphrase: string, saltBase64: s
   });
 }
 
-function computeFingerprintNode(rawKey: Buffer): string {
+function computeFingerprintNode(rawKey) {
   const digest = crypto.createHash('sha256').update(rawKey).digest();
   return Array.from(digest.subarray(0, 8))
     .map((b) => b.toString(16).padStart(2, '0'))
@@ -135,14 +446,14 @@ function computeFingerprintNode(rawKey: Buffer): string {
     .toUpperCase();
 }
 
-function signToken(payload: SessionPayload): string {
+function signToken(payload) {
   const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
   const sig = crypto.createHmac('sha256', SESSION_SECRET).update(encoded).digest('base64url');
   return `${encoded}.${sig}`;
 }
 
-function verifyToken(token: string): SessionPayload | null {
-  const parts = token.split('.');
+function verifyToken(token) {
+  const parts = String(token || '').split('.');
   if (parts.length !== 2) return null;
   const [encoded, sig] = parts;
   const expected = crypto.createHmac('sha256', SESSION_SECRET).update(encoded).digest('base64url');
@@ -150,7 +461,7 @@ function verifyToken(token: string): SessionPayload | null {
   const b = Buffer.from(expected);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
   try {
-    const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as SessionPayload;
+    const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
     if (Date.now() > parsed.exp) return null;
     return parsed;
   } catch {
@@ -158,15 +469,8 @@ function verifyToken(token: string): SessionPayload | null {
   }
 }
 
-interface CredentialStore {
-  vaultKeyBase64: string;
-  keyVersion: number;
-  fingerprint: string;
-  credentials: Record<string, StoredCredential>;
-}
-
-let dbState: PracticeDatabase;
-let credStore: CredentialStore;
+let dbState;
+let credStore;
 let initialized = false;
 
 function saveDb() {
@@ -174,7 +478,7 @@ function saveDb() {
     if (!ensureDataDir()) return;
     fs.writeFileSync(DB_FILE, JSON.stringify(dbState, null, 2), 'utf8');
   } catch {
-    // Keep in-memory state operational if ephemeral serverless disk is unavailable
+    // Safe in-memory fallback when serverless filesystem is unavailable
   }
 }
 
@@ -183,18 +487,11 @@ function saveCreds() {
     if (!ensureDataDir()) return;
     fs.writeFileSync(CRED_FILE, JSON.stringify(credStore, null, 2), 'utf8');
   } catch {
-    // Keep in-memory credentials operational if ephemeral serverless disk is unavailable
+    // Safe in-memory fallback when serverless filesystem is unavailable
   }
 }
 
-function createCredentialEntry(
-  userId: string,
-  username: string,
-  plainPassword: string,
-  vaultKeyRaw: Buffer,
-  keyVersion: number,
-  fingerprint: string
-): StoredCredential {
+function createCredentialEntry(userId, username, plainPassword, vaultKeyRaw, keyVersion, fingerprint) {
   const { salt, hash } = hashPassword(plainPassword);
   const e2eeSalt = crypto.randomBytes(16).toString('base64');
   const e2eeWrappedKey = wrapVaultKeyNode(vaultKeyRaw, plainPassword, e2eeSalt);
@@ -218,9 +515,9 @@ function initStorage() {
 
   if (fs.existsSync(CRED_FILE)) {
     try {
-      credStore = JSON.parse(fs.readFileSync(CRED_FILE, 'utf8')) as CredentialStore;
+      credStore = JSON.parse(fs.readFileSync(CRED_FILE, 'utf8'));
     } catch {
-      credStore = undefined as unknown as CredentialStore;
+      credStore = undefined;
     }
   }
   if (!credStore) {
@@ -238,30 +535,21 @@ function initStorage() {
 
   if (fs.existsSync(DB_FILE)) {
     try {
-      dbState = JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) as PracticeDatabase;
+      dbState = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
     } catch {
-      dbState = createEmptyDatabase();
+      dbState = createEmptyServerDatabase();
     }
   } else {
-    dbState = createEmptyDatabase();
+    dbState = createEmptyServerDatabase();
   }
 
-  if (dbState.system_settings[0]) {
+  if (dbState.system_settings && dbState.system_settings[0]) {
     dbState.system_settings[0].e2eeKeyFingerprint = credStore.fingerprint;
     dbState.system_settings[0].e2eeKeyVersion = credStore.keyVersion;
   }
 
   const nowIso = new Date().toISOString();
-  const bootstrapSpecs: {
-    id: string;
-    username: string;
-    password: string;
-    displayName: string;
-    email: string;
-    role: RoleCode;
-    strNumber?: string;
-    sipNumber?: string;
-  }[] = [
+  const bootstrapSpecs = [
     {
       id: 'usr-superadmin',
       username: superAdminUser,
@@ -306,7 +594,7 @@ function initStorage() {
     const existingUser = dbState.users.find((u) => u.id === spec.id || u.username === spec.username);
     const cred = credStore.credentials[spec.username];
     if (!existingUser) {
-      const account: UserAccount = {
+      dbState.users.push({
         id: spec.id,
         username: spec.username,
         displayName: spec.displayName,
@@ -322,8 +610,7 @@ function initStorage() {
         createdBy: 'system',
         updatedAt: nowIso,
         updatedBy: 'system'
-      };
-      dbState.users.push(account);
+      });
       changed = true;
     }
   }
@@ -355,9 +642,7 @@ function initStorage() {
   initialized = true;
 }
 
-const VALID_COLLECTIONS = new Set<CollectionName>(Object.keys(createEmptyDatabase()) as CollectionName[]);
-
-function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
+function requireAuth(req, res, next) {
   const header = req.headers.authorization;
   if (!header || !header.startsWith('Bearer ')) {
     res.status(401).json({ error: 'Sesi tidak valid. Silakan login kembali.' });
@@ -378,7 +663,7 @@ function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
   next();
 }
 
-function buildFilteredState(role: RoleCode, userId: string): PracticeDatabase {
+function buildFilteredState(role, userId) {
   return {
     ...dbState,
     audit_logs: role === 'SUPER_ADMIN' ? dbState.audit_logs : [],
@@ -395,13 +680,7 @@ function buildFilteredState(role: RoleCode, userId: string): PracticeDatabase {
   };
 }
 
-function checkCollectionWriteAccess(
-  role: RoleCode,
-  collection: CollectionName,
-  method: 'UPSERT' | 'DELETE',
-  existingItem?: Record<string, unknown>,
-  incomingItem?: Record<string, unknown>
-): string | null {
+function checkCollectionWriteAccess(role, collection, method, existingItem, incomingItem) {
   if (collection === 'audit_logs') {
     if (method === 'DELETE' || existingItem) {
       return 'Audit log bersifat permanen dan tidak dapat diubah atau dihapus.';
@@ -413,7 +692,7 @@ function checkCollectionWriteAccess(
   }
   if (role === 'SUPER_ADMIN') return null;
 
-  const superAdminOnly: CollectionName[] = [
+  const superAdminOnly = [
     'users',
     'roles',
     'permissions',
@@ -428,7 +707,7 @@ function checkCollectionWriteAccess(
   }
 
   if (role === 'ASISTEN_DOKTER') {
-    const medicalOnly: CollectionName[] = [
+    const medicalOnly = [
       'medical_records',
       'diagnoses',
       'pregnancies',
@@ -457,13 +736,7 @@ function checkCollectionWriteAccess(
   }
 
   if (role === 'DOKTER_SPOG') {
-    const financeOnly: CollectionName[] = [
-      'payments',
-      'refunds',
-      'cash_sessions',
-      'cash_transactions',
-      'expenses'
-    ];
+    const financeOnly = ['payments', 'refunds', 'cash_sessions', 'cash_transactions', 'expenses'];
     if (financeOnly.includes(collection)) {
       return 'Dokter tidak diperkenankan mengubah transaksi pembayaran kasir.';
     }
@@ -482,27 +755,34 @@ function checkCollectionWriteAccess(
   return 'Akses ditolak.';
 }
 
-function appendServerAudit(entry: Omit<AuditLog, 'id' | 'createdAt'>) {
-  const log: AuditLog = {
+function appendServerAudit(entry) {
+  dbState.audit_logs.unshift({
     ...entry,
     id: `aud-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
     createdAt: new Date().toISOString()
-  };
-  dbState.audit_logs.unshift(log);
+  });
   if (dbState.audit_logs.length > 2000) {
     dbState.audit_logs = dbState.audit_logs.slice(0, 2000);
   }
 }
 
-export function createApiApp(): express.Express {
+export function createApiApp() {
   initStorage();
   const app = express();
   app.set('trust proxy', 1);
 
-  // Skip express.json() if serverless platform already pre-parsed req.body to prevent stream hangs
   const jsonParser = express.json({ limit: '12mb' });
   app.use((req, res, next) => {
-    if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
+    if (typeof req.body === 'string' && req.body.trim().startsWith('{')) {
+      try {
+        req.body = JSON.parse(req.body);
+        next();
+        return;
+      } catch {
+        // Fall through to jsonParser
+      }
+    }
+    if (req.readableEnded || (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0)) {
       next();
       return;
     }
@@ -534,7 +814,7 @@ export function createApiApp(): express.Express {
   });
 
   router.post('/auth/login', (req, res) => {
-    const { username, password } = (req.body || {}) as { username?: string; password?: string };
+    const { username, password } = req.body || {};
     const normUser = String(username || '').trim().toLowerCase();
     const passStr = String(password || '');
     const rateKey = `${req.ip || 'local'}:${normUser}`;
@@ -603,7 +883,7 @@ export function createApiApp(): express.Express {
     });
   });
 
-  router.post('/auth/logout', requireAuth, (req: AuthedRequest, res) => {
+  router.post('/auth/logout', requireAuth, (req, res) => {
     if (req.session) {
       appendServerAudit({
         userId: req.session.userId,
@@ -619,26 +899,18 @@ export function createApiApp(): express.Express {
     res.json({ ok: true });
   });
 
-  router.post('/auth/users', requireAuth, (req: AuthedRequest, res) => {
+  router.post('/auth/users', requireAuth, (req, res) => {
     if (req.session?.role !== 'SUPER_ADMIN') {
       res.status(403).json({ error: 'Hanya Super Admin yang dapat membuat akun pengguna.' });
       return;
     }
-    const { username, password, displayName, email, role, strNumber, sipNumber } = (req.body || {}) as {
-      username?: string;
-      password?: string;
-      displayName?: string;
-      email?: string;
-      role?: RoleCode;
-      strNumber?: string;
-      sipNumber?: string;
-    };
+    const { username, password, displayName, email, role, strNumber, sipNumber } = req.body || {};
     const normUser = String(username || '').trim().toLowerCase();
     if (!normUser || !/^[a-z0-9._-]{3,40}$/.test(normUser)) {
       res.status(400).json({ error: 'Username harus 3-40 karakter (huruf, angka, titik, garis bawah).' });
       return;
     }
-    if (!password || password.length < 6) {
+    if (!password || String(password).length < 6) {
       res.status(400).json({ error: 'Kata sandi minimal 6 karakter.' });
       return;
     }
@@ -653,18 +925,18 @@ export function createApiApp(): express.Express {
 
     const id = `usr-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
     const vaultKeyRaw = Buffer.from(credStore.vaultKeyBase64, 'base64');
-    const cred = createCredentialEntry(id, normUser, password, vaultKeyRaw, credStore.keyVersion, credStore.fingerprint);
+    const cred = createCredentialEntry(id, normUser, String(password), vaultKeyRaw, credStore.keyVersion, credStore.fingerprint);
     credStore.credentials[normUser] = cred;
 
     const nowIso = new Date().toISOString();
-    const newUser: UserAccount = {
+    const newUser = {
       id,
       username: normUser,
-      displayName: displayName.trim(),
+      displayName: String(displayName).trim(),
       email: String(email || `${normUser}@klinikspog.id`).trim(),
       role,
-      strNumber: strNumber?.trim() || '',
-      sipNumber: sipNumber?.trim() || '',
+      strNumber: strNumber ? String(strNumber).trim() : '',
+      sipNumber: sipNumber ? String(sipNumber).trim() : '',
       active: true,
       e2eeSalt: cred.e2eeSalt,
       e2eeWrappedKey: cred.e2eeWrappedKey,
@@ -690,7 +962,7 @@ export function createApiApp(): express.Express {
     res.status(201).json({ user: newUser });
   });
 
-  router.patch('/auth/users/:userId', requireAuth, (req: AuthedRequest, res) => {
+  router.patch('/auth/users/:userId', requireAuth, (req, res) => {
     if (req.session?.role !== 'SUPER_ADMIN') {
       res.status(403).json({ error: 'Hanya Super Admin yang dapat memperbarui akun pengguna.' });
       return;
@@ -701,19 +973,11 @@ export function createApiApp(): express.Express {
       res.status(404).json({ error: 'Pengguna tidak ditemukan.' });
       return;
     }
-    const { displayName, email, role, active, newPassword, strNumber, sipNumber } = (req.body || {}) as {
-      displayName?: string;
-      email?: string;
-      role?: RoleCode;
-      active?: boolean;
-      newPassword?: string;
-      strNumber?: string;
-      sipNumber?: string;
-    };
+    const { displayName, email, role, active, newPassword, strNumber, sipNumber } = req.body || {};
 
     const beforeSummary = `${user.displayName} | ${user.role} | active=${user.active}`;
-    if (displayName) user.displayName = displayName.trim();
-    if (email) user.email = email.trim();
+    if (displayName) user.displayName = String(displayName).trim();
+    if (email) user.email = String(email).trim();
     if (role && ['SUPER_ADMIN', 'DOKTER_SPOG', 'ASISTEN_DOKTER'].includes(role) && user.id !== req.session.userId) {
       user.role = role;
     }
@@ -723,12 +987,12 @@ export function createApiApp(): express.Express {
     if (typeof strNumber === 'string') user.strNumber = strNumber.trim();
     if (typeof sipNumber === 'string') user.sipNumber = sipNumber.trim();
 
-    if (newPassword && newPassword.length >= 6) {
+    if (newPassword && String(newPassword).length >= 6) {
       const vaultKeyRaw = Buffer.from(credStore.vaultKeyBase64, 'base64');
       const cred = createCredentialEntry(
         user.id,
         user.username,
-        newPassword,
+        String(newPassword),
         vaultKeyRaw,
         credStore.keyVersion,
         credStore.fingerprint
@@ -757,12 +1021,12 @@ export function createApiApp(): express.Express {
     res.json({ user });
   });
 
-  router.get('/store/state', requireAuth, (req: AuthedRequest, res) => {
-    res.json(buildFilteredState(req.session!.role, req.session!.userId));
+  router.get('/store/state', requireAuth, (req, res) => {
+    res.json(buildFilteredState(req.session.role, req.session.userId));
   });
 
-  router.put('/store/:collection/:docId', requireAuth, (req: AuthedRequest, res) => {
-    const collection = req.params.collection as CollectionName;
+  router.put('/store/:collection/:docId', requireAuth, (req, res) => {
+    const collection = req.params.collection;
     const docId = String(req.params.docId || '');
     if (!VALID_COLLECTIONS.has(collection)) {
       res.status(400).json({ error: 'Koleksi tidak dikenal.' });
@@ -772,25 +1036,25 @@ export function createApiApp(): express.Express {
       res.status(400).json({ error: 'Format ID dokumen tidak valid.' });
       return;
     }
-    const list = dbState[collection] as unknown as Record<string, unknown>[];
+    const list = dbState[collection];
     const existingIdx = list.findIndex((item) => item.id === docId);
     const existingItem = existingIdx >= 0 ? list[existingIdx] : undefined;
-    const incoming = (req.body || {}) as Record<string, unknown>;
+    const incoming = req.body || {};
 
-    const denied = checkCollectionWriteAccess(req.session!.role, collection, 'UPSERT', existingItem, incoming);
+    const denied = checkCollectionWriteAccess(req.session.role, collection, 'UPSERT', existingItem, incoming);
     if (denied) {
       res.status(403).json({ error: denied });
       return;
     }
 
     const nowIso = new Date().toISOString();
-    const record: Record<string, unknown> = {
+    const record = {
       ...incoming,
       id: docId,
-      createdAt: (existingItem?.createdAt as string) || (incoming.createdAt as string) || nowIso,
-      createdBy: (existingItem?.createdBy as string) || req.session!.userId,
+      createdAt: existingItem?.createdAt || incoming.createdAt || nowIso,
+      createdBy: existingItem?.createdBy || req.session.userId,
       updatedAt: nowIso,
-      updatedBy: req.session!.userId
+      updatedBy: req.session.userId
     };
 
     if (existingIdx >= 0) {
@@ -801,9 +1065,9 @@ export function createApiApp(): express.Express {
 
     if (collection !== 'audit_logs' && collection !== 'notifications') {
       appendServerAudit({
-        userId: req.session!.userId,
-        userName: req.session!.displayName,
-        role: req.session!.role,
+        userId: req.session.userId,
+        userName: req.session.displayName,
+        role: req.session.role,
         action: existingIdx >= 0 ? 'UPDATE' : 'CREATE',
         entity: collection,
         entityId: docId,
@@ -817,30 +1081,30 @@ export function createApiApp(): express.Express {
     res.json({ item: record });
   });
 
-  router.delete('/store/:collection/:docId', requireAuth, (req: AuthedRequest, res) => {
-    const collection = req.params.collection as CollectionName;
+  router.delete('/store/:collection/:docId', requireAuth, (req, res) => {
+    const collection = req.params.collection;
     const docId = String(req.params.docId || '');
     if (!VALID_COLLECTIONS.has(collection)) {
       res.status(400).json({ error: 'Koleksi tidak dikenal.' });
       return;
     }
-    const list = dbState[collection] as unknown as Record<string, unknown>[];
+    const list = dbState[collection];
     const existingIdx = list.findIndex((item) => item.id === docId);
     if (existingIdx < 0) {
       res.status(404).json({ error: 'Data tidak ditemukan.' });
       return;
     }
     const existingItem = list[existingIdx];
-    const denied = checkCollectionWriteAccess(req.session!.role, collection, 'DELETE', existingItem);
+    const denied = checkCollectionWriteAccess(req.session.role, collection, 'DELETE', existingItem);
     if (denied) {
       res.status(403).json({ error: denied });
       return;
     }
     list.splice(existingIdx, 1);
     appendServerAudit({
-      userId: req.session!.userId,
-      userName: req.session!.displayName,
-      role: req.session!.role,
+      userId: req.session.userId,
+      userName: req.session.displayName,
+      role: req.session.role,
       action: 'DELETE',
       entity: collection,
       entityId: docId,
@@ -851,16 +1115,16 @@ export function createApiApp(): express.Express {
     res.json({ ok: true });
   });
 
-  router.post('/store/demo/load', requireAuth, (req: AuthedRequest, res) => {
+  router.post('/store/demo/load', requireAuth, (req, res) => {
     if (req.session?.role !== 'SUPER_ADMIN') {
       res.status(403).json({ error: 'Hanya Super Admin yang dapat memuat data demonstrasi.' });
       return;
     }
-    const payload = (req.body || {}) as Partial<PracticeDatabase>;
+    const payload = req.body || {};
     for (const [colName, items] of Object.entries(payload)) {
-      if (!VALID_COLLECTIONS.has(colName as CollectionName) || !Array.isArray(items)) continue;
-      const target = dbState[colName as CollectionName] as unknown as Record<string, unknown>[];
-      for (const item of items as unknown as Record<string, unknown>[]) {
+      if (!VALID_COLLECTIONS.has(colName) || !Array.isArray(items)) continue;
+      const target = dbState[colName];
+      for (const item of items) {
         const idx = target.findIndex((t) => t.id === item.id);
         if (idx >= 0) target[idx] = item;
         else target.unshift(item);
@@ -879,7 +1143,7 @@ export function createApiApp(): express.Express {
     res.json({ ok: true });
   });
 
-  router.post('/store/demo/clear', requireAuth, (req: AuthedRequest, res) => {
+  router.post('/store/demo/clear', requireAuth, (req, res) => {
     if (req.session?.role !== 'SUPER_ADMIN') {
       res.status(403).json({ error: 'Hanya Super Admin yang dapat menghapus data demonstrasi.' });
       return;
@@ -899,8 +1163,7 @@ export function createApiApp(): express.Express {
       ) {
         continue;
       }
-      const list = dbState[colName] as unknown as Record<string, unknown>[];
-      (dbState as unknown as Record<string, unknown>)[colName] = list.filter((i) => !i.isDemo);
+      dbState[colName] = dbState[colName].filter((i) => !i.isDemo);
     }
     appendServerAudit({
       userId: req.session.userId,
@@ -915,16 +1178,16 @@ export function createApiApp(): express.Express {
     res.json({ ok: true });
   });
 
-  router.post('/store/backup/restore', requireAuth, (req: AuthedRequest, res) => {
+  router.post('/store/backup/restore', requireAuth, (req, res) => {
     if (req.session?.role !== 'SUPER_ADMIN') {
       res.status(403).json({ error: 'Hanya Super Admin yang dapat memulihkan backup database.' });
       return;
     }
-    const backup = (req.body || {}) as Partial<PracticeDatabase>;
+    const backup = req.body || {};
     for (const colName of VALID_COLLECTIONS) {
       if (colName === 'users' || colName === 'audit_logs') continue;
       if (Array.isArray(backup[colName])) {
-        (dbState as unknown as Record<string, unknown>)[colName] = backup[colName];
+        dbState[colName] = backup[colName];
       }
     }
     appendServerAudit({
@@ -940,9 +1203,14 @@ export function createApiApp(): express.Express {
     res.json({ ok: true });
   });
 
-  // Mount on both /api and / so Vercel rewrites (/api/(.*) -> /api/index) and direct Express calls always match
   app.use('/api', router);
   app.use('/', router);
+
+  // Structured JSON error handler so API routes never leak raw HTML 500 pages
+  app.use((err, _req, res, _next) => {
+    console.error('API runtime error:', err);
+    res.status(500).json({ error: 'Terjadi kesalahan internal pada server API.' });
+  });
 
   return app;
 }
