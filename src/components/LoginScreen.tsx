@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Eye, EyeOff, Lock, ShieldCheck, Stethoscope } from 'lucide-react';
+import { Eye, EyeOff, Lock, Stethoscope } from 'lucide-react';
 import { usePractice } from '../context/PracticeContext';
 import { DEFAULT_HERO_PATH, DEFAULT_LOGO_PATH } from '../data/defaults';
 
@@ -106,28 +106,10 @@ export const LoginScreen: React.FC = () => {
           </div>
         </div>
 
-        <div className="relative z-10 max-w-xl space-y-6">
+        <div className="relative z-10 max-w-xl">
           <h1 className="text-3xl xl:text-4xl font-bold tracking-tight leading-tight text-balance">
             Pelayanan Obstetri &amp; Ginekologi Terintegrasi, Aman, dan Terstandarisasi.
           </h1>
-          <p className="text-sm text-slate-200 leading-relaxed">
-            Mengelola rekam medis elektronik, pemantauan kehamilan ANC, laporan USG, resep dengan peringatan alergi, kasir terpadu, dan audit log sesuai prinsip perlindungan data kesehatan.
-          </p>
-
-          <div className="grid grid-cols-3 gap-6 pt-4 border-t border-white/15">
-            <div>
-              <p className="text-xs text-teal-300 font-medium">Enkripsi Data</p>
-              <p className="text-sm font-semibold text-white mt-1">AES-256-GCM E2EE</p>
-            </div>
-            <div>
-              <p className="text-xs text-teal-300 font-medium">Kontrol Akses</p>
-              <p className="text-sm font-semibold text-white mt-1">3-Role RBAC Ketat</p>
-            </div>
-            <div>
-              <p className="text-xs text-teal-300 font-medium">Interoperabilitas</p>
-              <p className="text-sm font-semibold text-white mt-1">Arsitektur FHIR R4</p>
-            </div>
-          </div>
         </div>
 
         <div className="relative z-10 flex items-center justify-between text-xs text-slate-300 border-t border-white/15 pt-5">
@@ -253,50 +235,6 @@ export const LoginScreen: React.FC = () => {
             </svg>
             {googleLoading ? 'Menghubungkan Firebase...' : 'Masuk dengan Google (Firebase Auth)'}
           </button>
-
-          {/* Role Verification Helper */}
-          <div className="pt-4 border-t border-slate-200 space-y-2.5">
-            <p className="text-xs font-medium text-slate-500">Akses Cepat Pengujian Role (Isi Form Otomatis):</p>
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setUsername('superman');
-                  setPassword('superman123');
-                }}
-                className="px-2.5 py-2 text-xs font-medium rounded-lg border border-slate-200 text-slate-700 hover:border-teal-500 hover:text-teal-800 transition-colors whitespace-nowrap"
-              >
-                Super Admin
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setUsername('dokter');
-                  setPassword('dokter123');
-                }}
-                className="px-2.5 py-2 text-xs font-medium rounded-lg border border-slate-200 text-slate-700 hover:border-teal-500 hover:text-teal-800 transition-colors whitespace-nowrap"
-              >
-                Dokter Sp.OG
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setUsername('asisten');
-                  setPassword('asisten123');
-                }}
-                className="px-2.5 py-2 text-xs font-medium rounded-lg border border-slate-200 text-slate-700 hover:border-teal-500 hover:text-teal-800 transition-colors whitespace-nowrap"
-              >
-                Asisten Dokter
-              </button>
-            </div>
-          </div>
-
-          <div className="flex items-start gap-2.5 text-xs text-slate-500 pt-1">
-            <ShieldCheck className="w-4 h-4 text-teal-700 shrink-0 mt-0.5" />
-            <p className="leading-relaxed">
-              Seluruh akun dilindungi enkripsi kunci end-to-end (PBKDF2-SHA256 + AES-256-GCM) sesuai prinsip UU No. 27 Tahun 2022 tentang Pelindungan Data Pribadi.
-            </p>
-          </div>
         </div>
       </div>
     </div>
