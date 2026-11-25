@@ -689,8 +689,25 @@ export interface BackupRecord extends AuditFields {
   triggerType: 'Manual' | 'Terjadwal';
 }
 
+export interface AccessRequest extends AuditFields {
+  uid: string;
+  email: string;
+  username: string;
+  displayName: string;
+  authProvider: 'google' | 'password';
+  requestedNote?: string;
+  requestedRole?: RoleCode;
+  status: 'pending' | 'approved' | 'rejected';
+  assignedRole?: RoleCode;
+  reviewedBy?: string;
+  reviewedByName?: string;
+  reviewedAt?: string;
+  rejectionReason?: string;
+}
+
 export interface PracticeDatabase {
   users: UserAccount[];
+  access_requests: AccessRequest[];
   roles: RoleDefinition[];
   permissions: PermissionDefinition[];
   practice_settings: PracticeSettings[];

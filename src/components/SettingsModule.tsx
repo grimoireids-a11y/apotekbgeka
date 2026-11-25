@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   CalendarClock,
   Check,
+  Clock,
   Cloud,
   DatabaseBackup,
   Download,
@@ -17,12 +18,15 @@ import {
   Sliders,
   Trash2,
   Upload,
+  UserCheck,
   UserPlus,
+  UserX,
   X
 } from 'lucide-react';
 import { usePractice } from '../context/PracticeContext';
 import { SignatureInput } from './SignatureInput';
 import type {
+  AccessRequest,
   BackupRecord,
   DocumentTemplates,
   Icd10Code,
@@ -75,6 +79,8 @@ export const SettingsModule: React.FC = () => {
     createStaffAccount,
     updateStaffAccount,
     deleteStaffAccount,
+    approveAccessRequest,
+    rejectAccessRequest,
     loadDemoData,
     clearDemoData,
     restoreBackupData,
@@ -157,6 +163,15 @@ export const SettingsModule: React.FC = () => {
   const [sigModalUser, setSigModalUser] = useState<UserAccount | null>(null);
   const [sigDraft, setSigDraft] = useState('');
   const [savingUserSig, setSavingUserSig] = useState(false);
+
+  // Access Request Approval state
+  const [approvalRoles, setApprovalRoles] = useState<Record<string, RoleCode>>({});
+  const [approvalStr, setApprovalStr] = useState<Record<string, string>>({});
+  const [approvalSip, setApprovalSip] = useState<Record<string, string>>({});
+  const [rejectingReqId, setRejectingReqId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [processingReqId, setProcessingReqId] = useState<string | null>(null);
+  const [showReviewedRequests, setShowReviewedRequests] = useState(false);
 
   // Role & Custom Permission editor state
   const [editingRole, setEditingRole] = useState<RoleDefinition | null>(null);
@@ -1769,14 +1784,295 @@ export const SettingsModule: React.FC = () => {
       }
     };
 
+    const pendingRequests = (dbState.access_requests || []).filter((r) => r.status === 'pending');
+    const reviewedRequests = (dbState.access_requests || []).filter((r) => r.status !== 'pending');
+
+    const handleApproveReq = async (req: AccessRequest) => {
+      const chosenRole = approvalRoles[req.id] || req.requestedRole || 'DOKTER_SPOG';
+      setProcessingReqId(req.id);
+      try {
+        await approveAccessRequest(req, chosenRole, {
+          strNumber: approvalStr[req.id] || '',
+          sipNumber: approvalSip[req.id] || ''
+        });
+      } catch (err) {
+        notifyToast(err instanceof Error ? err.message : 'Gagal menyetujui akun.', 'error');
+      } finally {
+        setProcessingReqId(null);
+      }
+    };
+
+    const handleRejectReq = async (req: AccessRequest) => {
+      setProcessingReqId(req.id);
+      try {
+        await rejectAccessRequest(req, rejectReason);
+        setRejectingReqId(null);
+        setRejectReason('');
+      } catch (err) {
+        notifyToast(err instanceof Error ? err.message : 'Gagal menolak permintaan.', 'error');
+      } finally {
+        setProcessingReqId(null);
+      }
+    };
+
     return (
       <div className="space-y-6">
         <div>
           <h1 className="text-xl font-bold text-slate-900">Manajemen Pengguna &amp; Enkripsi E2EE Per Akun</h1>
           <p className="text-sm text-slate-500">
-            Tambah, edit profil/role/email, reset password, aktifkan/nonaktifkan, atau hapus akun staf. Email Google yang didaftarkan otomatis mendapat role sesuai tabel saat login Firebase. Fingerprint Vault:{' '}
+            Setujui pendaftaran akun baru dan tentukan role secara real-time, atau tambah/edit/hapus akun staf. Fingerprint Vault:{' '}
             <span className="font-mono text-teal-800 font-semibold">{e2eeFingerprint || 'N/A'}</span>
           </p>
+        </div>
+
+        {/* Access Requests Approval Queue */}
+        <div
+          className={`bg-white rounded-xl p-5 space-y-4 border ${
+            pendingRequests.length > 0 ? 'border-amber-300 ring-1 ring-amber-100' : 'border-slate-200'
+          }`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div
+                className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                  pendingRequests.length > 0 ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-600'
+                }`}
+              >
+                <Clock className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <span>Permintaan Persetujuan Akun Baru</span>
+                  {pendingRequests.length > 0 && (
+                    <span className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-[11px] font-mono tabular-nums">
+                      {pendingRequests.length} Menunggu
+                    </span>
+                  )}
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Pengguna yang mendaftar lewat email atau masuk dengan Google baru wajib disetujui dan ditetapkan rolenya di sini.
+                </p>
+              </div>
+            </div>
+            {reviewedRequests.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowReviewedRequests((v) => !v)}
+                className="text-xs font-semibold text-teal-700 hover:text-teal-900"
+              >
+                {showReviewedRequests
+                  ? 'Sembunyikan Riwayat'
+                  : `Lihat Riwayat (${reviewedRequests.length})`}
+              </button>
+            )}
+          </div>
+
+          {pendingRequests.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/70 px-4 py-5 text-center text-xs text-slate-500">
+              Tidak ada permintaan akun baru yang menunggu persetujuan saat ini.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {pendingRequests.map((req) => {
+                const selectedRole = approvalRoles[req.id] || req.requestedRole || 'DOKTER_SPOG';
+                const isRejecting = rejectingReqId === req.id;
+                const isBusy = processingReqId === req.id;
+
+                return (
+                  <div
+                    key={req.id}
+                    className="rounded-xl border border-amber-200 bg-amber-50/30 p-4 space-y-3.5"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="space-y-0.5 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-bold text-slate-900">{req.displayName}</span>
+                          <span className="text-[11px] px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-medium">
+                            {req.authProvider === 'google' ? 'Google' : 'Email & Sandi'}
+                          </span>
+                          {req.requestedRole && (
+                            <span className="text-[11px] px-2 py-0.5 rounded bg-teal-50 text-teal-800 font-medium">
+                              Usulan: {ROLE_LABELS[req.requestedRole]}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs font-mono text-slate-600 break-all">
+                          {req.email} · username: {req.username}
+                        </p>
+                        {req.requestedNote && (
+                          <p className="text-xs text-slate-600 pt-0.5">
+                            <span className="font-semibold text-slate-700">Catatan:</span> {req.requestedNote}
+                          </p>
+                        )}
+                      </div>
+                      <span className="text-[11px] font-mono tabular-nums text-slate-500 shrink-0">
+                        {new Date(req.createdAt).toLocaleString('id-ID')}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5 items-end pt-2 border-t border-amber-200/70">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                          Tetapkan Role Akun
+                        </label>
+                        <select
+                          value={selectedRole}
+                          onChange={(e) =>
+                            setApprovalRoles((prev) => ({ ...prev, [req.id]: e.target.value as RoleCode }))
+                          }
+                          className="w-full h-9 px-2.5 text-xs border border-slate-300 rounded-lg bg-white font-medium text-slate-900"
+                        >
+                          <option value="DOKTER_SPOG">Dokter Sp.OG</option>
+                          <option value="ASISTEN_DOKTER">Asisten Dokter</option>
+                          <option value="SUPER_ADMIN">Super Admin</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                          No. STR (Opsional)
+                        </label>
+                        <input
+                          type="text"
+                          value={approvalStr[req.id] || ''}
+                          onChange={(e) =>
+                            setApprovalStr((prev) => ({ ...prev, [req.id]: e.target.value }))
+                          }
+                          placeholder="Nomor STR"
+                          className="w-full h-9 px-2.5 text-xs border border-slate-300 rounded-lg bg-white font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                          No. SIP (Opsional)
+                        </label>
+                        <input
+                          type="text"
+                          value={approvalSip[req.id] || ''}
+                          onChange={(e) =>
+                            setApprovalSip((prev) => ({ ...prev, [req.id]: e.target.value }))
+                          }
+                          placeholder="Nomor SIP"
+                          className="w-full h-9 px-2.5 text-xs border border-slate-300 rounded-lg bg-white font-mono"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => void handleApproveReq(req)}
+                        className="h-9 px-3.5 rounded-lg bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                      >
+                        <UserCheck className="w-3.5 h-3.5" />
+                        {isBusy ? 'Memproses...' : 'Setujui & Aktifkan'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => {
+                          setRejectingReqId(isRejecting ? null : req.id);
+                          setRejectReason('');
+                        }}
+                        className="h-9 px-3.5 rounded-lg border border-red-200 bg-white hover:bg-red-50 disabled:opacity-60 text-red-700 text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+                      >
+                        <UserX className="w-3.5 h-3.5" />
+                        Tolak
+                      </button>
+                    </div>
+
+                    {isRejecting && (
+                      <div className="flex flex-col sm:flex-row gap-2 pt-2 border-t border-red-200/70">
+                        <input
+                          type="text"
+                          value={rejectReason}
+                          onChange={(e) => setRejectReason(e.target.value)}
+                          placeholder="Alasan penolakan (opsional, akan terlihat oleh pendaftar)..."
+                          className="flex-1 h-9 px-3 text-xs border border-red-300 rounded-lg bg-white"
+                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => void handleRejectReq(req)}
+                            className="h-9 px-3.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold whitespace-nowrap"
+                          >
+                            Konfirmasi Tolak
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRejectingReqId(null);
+                              setRejectReason('');
+                            }}
+                            className="h-9 px-3 rounded-lg border border-slate-200 bg-white text-slate-600 text-xs font-semibold"
+                          >
+                            Batal
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {showReviewedRequests && reviewedRequests.length > 0 && (
+            <div className="pt-3 border-t border-slate-200 space-y-2">
+              <p className="text-xs font-semibold text-slate-700">Riwayat Keputusan Persetujuan</p>
+              <div className="overflow-x-auto border border-slate-200 rounded-lg">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-semibold">Pendaftar</th>
+                      <th className="px-3 py-2 text-left font-semibold">Status</th>
+                      <th className="px-3 py-2 text-left font-semibold">Role / Catatan</th>
+                      <th className="px-3 py-2 text-left font-semibold">Diproses Oleh</th>
+                      <th className="px-3 py-2 text-right font-semibold">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {reviewedRequests.map((req) => (
+                      <tr key={req.id}>
+                        <td className="px-3 py-2">
+                          <p className="font-semibold text-slate-900">{req.displayName}</p>
+                          <p className="text-[11px] font-mono text-slate-500">{req.email}</p>
+                        </td>
+                        <td className="px-3 py-2">
+                          <span
+                            className={`font-semibold ${
+                              req.status === 'approved' ? 'text-emerald-700' : 'text-red-700'
+                            }`}
+                          >
+                            {req.status === 'approved' ? 'Disetujui' : 'Ditolak'}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-slate-700">
+                          {req.status === 'approved' && req.assignedRole
+                            ? ROLE_LABELS[req.assignedRole]
+                            : req.rejectionReason || '-'}
+                        </td>
+                        <td className="px-3 py-2 text-slate-500">
+                          {req.reviewedByName || '-'}
+                          {req.reviewedAt ? ` · ${new Date(req.reviewedAt).toLocaleDateString('id-ID')}` : ''}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await deleteRecord('access_requests', req.id);
+                              notifyToast('Riwayat permintaan dihapus.', 'info');
+                            }}
+                            className="text-slate-500 hover:text-red-700 font-semibold"
+                          >
+                            Hapus
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
 
         <form onSubmit={handleCreateUser} className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">

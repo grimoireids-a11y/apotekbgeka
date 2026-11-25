@@ -277,6 +277,7 @@ export function createDefaultIntegrations(): IntegrationConfig[] {
 export function createEmptyDatabase(): PracticeDatabase {
   return {
     users: [],
+    access_requests: [],
     roles: createDefaultRoles(),
     permissions: PERMISSION_CATALOG.map((p) => ({
       id: `perm-${p.key.replace('.', '-')}`,

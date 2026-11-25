@@ -19,12 +19,14 @@ import {
   handleFirestoreError,
   OperationType,
   provisionFirebaseEmailPasswordUser,
+  registerWithEmailPasswordFirebase,
   signInWithEmailPasswordFirebase,
   signInWithGoogleFirebase,
   signOutFirebase,
   usernameToStaffAuthEmail
 } from '../lib/firebase';
 import type {
+  AccessRequest,
   AuditLog,
   CollectionName,
   NavView,
@@ -49,7 +51,7 @@ import {
   unwrapVaultKeyForAccount,
   wrapVaultKeyForAccount
 } from '../utils/cryptoE2EE';
-import { hasPermission } from '../utils/rbac';
+import { hasPermission, ROLE_LABELS } from '../utils/rbac';
 
 const PATIENT_SENSITIVE_FIELDS = ['nik', 'phone', 'email', 'address', 'familyPhone', 'emergencyContact', 'allergies'];
 const RME_SENSITIVE_FIELDS = ['doctorNotes'];
@@ -111,7 +113,8 @@ const NEWEST_FIRST_COLLECTIONS = new Set<CollectionName>([
   'documents',
   'notifications',
   'audit_logs',
-  'backups'
+  'backups',
+  'access_requests'
 ]);
 
 const CODE_SORTED_COLLECTIONS = new Set<CollectionName>(['services', 'medicines', 'icd10_codes']);
@@ -151,7 +154,8 @@ const COLLECTION_LIMITS: Record<CollectionName, number> = {
   audit_logs: 1000,
   system_settings: 20,
   integrations: 100,
-  backups: 200
+  backups: 200,
+  access_requests: 200
 };
 
 const ALL_COLLECTIONS = Object.keys(COLLECTION_LIMITS) as CollectionName[];
@@ -179,6 +183,7 @@ function getAllowedCollectionsForRole(role: RoleCode): CollectionName[] {
   if (role === 'DOKTER_SPOG') {
     const excluded = new Set<CollectionName>([
       'users',
+      'access_requests',
       'audit_logs',
       'integrations',
       'backups',
@@ -192,6 +197,7 @@ function getAllowedCollectionsForRole(role: RoleCode): CollectionName[] {
   // ASISTEN_DOKTER
   const excluded = new Set<CollectionName>([
     'users',
+    'access_requests',
     'audit_logs',
     'integrations',
     'backups',
@@ -275,7 +281,19 @@ function formatFirebaseAuthError(err: unknown): string {
   if (code === 'auth/popup-blocked') {
     return 'Popup login Google diblokir oleh peramban. Izinkan popup untuk situs ini lalu coba lagi.';
   }
-  return msg || 'Gagal menghubungkan autentikasi Google Firebase.';
+  if (code === 'auth/email-already-in-use') {
+    return 'Email ini sudah terdaftar. Silakan masuk melalui tab Masuk untuk melihat status persetujuan akun Anda.';
+  }
+  if (code === 'auth/weak-password') {
+    return 'Kata sandi terlalu lemah. Gunakan minimal 6 karakter.';
+  }
+  if (code === 'auth/invalid-email') {
+    return 'Format alamat email tidak valid.';
+  }
+  if (code === 'auth/operation-not-allowed') {
+    return 'Pendaftaran Email/Password belum diaktifkan di Firebase Console (Authentication → Sign-in method → Email/Password).';
+  }
+  return msg || 'Gagal menghubungkan autentikasi Firebase.';
 }
 
 export interface ToastMessage {
@@ -295,6 +313,7 @@ interface PracticeContextValue {
   dbState: PracticeDatabase;
   currentUser: UserAccount | null;
   firebaseUser: FirebaseUser | null;
+  pendingAccessRequest: AccessRequest | null;
   authMode: 'none' | 'staff' | 'firebase';
   cloudSynced: boolean;
   loading: boolean;
@@ -315,6 +334,24 @@ interface PracticeContextValue {
   setPrintPayload: (payload: PrintPayload | null) => void;
   loginStaff: (username: string, password: string) => Promise<void>;
   loginGoogleFirebase: () => Promise<void>;
+  registerWithEmailFirebase: (payload: {
+    displayName: string;
+    email: string;
+    password: string;
+    requestedRole?: RoleCode;
+    requestedNote?: string;
+  }) => Promise<void>;
+  resubmitAccessRequest: (payload: {
+    displayName: string;
+    requestedRole?: RoleCode;
+    requestedNote?: string;
+  }) => Promise<void>;
+  approveAccessRequest: (
+    req: AccessRequest,
+    role: RoleCode,
+    opts?: { strNumber?: string; sipNumber?: string }
+  ) => Promise<void>;
+  rejectAccessRequest: (req: AccessRequest, reason?: string) => Promise<void>;
   logout: () => Promise<void>;
   upsertRecord: <K extends CollectionName>(col: K, item: PracticeDatabase[K][number]) => Promise<void>;
   deleteRecord: (col: CollectionName, id: string) => Promise<void>;
@@ -358,6 +395,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [dbState, setDbState] = useState<PracticeDatabase>(createEmptyDatabase());
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [pendingAccessRequest, setPendingAccessRequest] = useState<AccessRequest | null>(null);
   const [authMode, setAuthMode] = useState<'none' | 'staff' | 'firebase'>('none');
   const [cloudSynced, setCloudSynced] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
@@ -376,6 +414,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const dbStateRef = useRef<PracticeDatabase>(dbState);
   const seededUidRef = useRef<string | null>(null);
   const googleAuthInProgressRef = useRef<boolean>(false);
+  const pendingApprovalAutoUnlockRef = useRef<boolean>(false);
 
   useEffect(() => {
     authModeRef.current = authMode;
@@ -602,9 +641,9 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     [notifyToast]
   );
 
-  const resolveFirebaseStaffProfile = useCallback(async (fbUser: FirebaseUser): Promise<UserAccount> => {
+  const resolveFirebaseStaffProfile = useCallback(async (fbUser: FirebaseUser): Promise<UserAccount | null> => {
     const emailLower = (fbUser.email || '').trim().toLowerCase();
-    const isBootstrappedAdmin = emailLower === BOOTSTRAP_SUPERADMIN_EMAIL;
+    const isBootstrappedAdmin = emailLower === BOOTSTRAP_SUPERADMIN_EMAIL && fbUser.emailVerified;
     const nowIso = new Date().toISOString();
 
     let uidData: Partial<UserAccount> | null = null;
@@ -619,7 +658,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       // Ignore if not yet provisioned by UID
     }
 
-    if (emailLower) {
+    if (emailLower && fbUser.emailVerified) {
       try {
         const emailSnap = await getDoc(doc(db, 'staff_emails', emailLower));
         if (emailSnap.exists()) {
@@ -632,10 +671,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     const matched = uidData || emailData;
     if (!isBootstrappedAdmin && !matched) {
-      await signOutFirebase();
-      throw new Error(
-        `Email Google (${fbUser.email}) belum terdaftar sebagai staf praktik. Minta Super Admin menambahkan email Anda di Manajemen Pengguna.`
-      );
+      return null;
     }
     if (!isBootstrappedAdmin && matched && matched.active === false) {
       await signOutFirebase();
@@ -645,7 +681,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return {
       id: fbUser.uid,
       username: matched?.username || emailLower || fbUser.uid,
-      displayName: matched?.displayName || fbUser.displayName || 'Pengguna Google',
+      displayName: matched?.displayName || fbUser.displayName || 'Pengguna Staf',
       email: fbUser.email || matched?.email || '',
       role: isBootstrappedAdmin ? 'SUPER_ADMIN' : (matched?.role as RoleCode) || 'DOKTER_SPOG',
       strNumber: matched?.strNumber,
@@ -659,6 +695,57 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       lastLoginAt: nowIso
     };
   }, []);
+
+  const ensurePendingAccessRequest = useCallback(
+    async (
+      fbUser: FirebaseUser,
+      opts?: {
+        displayName?: string;
+        authProvider?: 'google' | 'password';
+        requestedRole?: RoleCode;
+        requestedNote?: string;
+      }
+    ): Promise<AccessRequest> => {
+      const reqRef = doc(db, 'access_requests', fbUser.uid);
+      const existingSnap = await getDoc(reqRef);
+      if (existingSnap.exists()) {
+        return { ...(existingSnap.data() as AccessRequest), id: existingSnap.id };
+      }
+
+      const nowIso = new Date().toISOString();
+      const emailLower = (fbUser.email || `${fbUser.uid}@staff.obgyn-pms.app`).trim().toLowerCase();
+      const rawPrefix = emailLower.split('@')[0]?.replace(/[^a-z0-9._-]/g, '') || '';
+      const derivedUsername = (rawPrefix || `user_${fbUser.uid.slice(0, 6)}`).slice(0, 60);
+      const inferredProvider: 'google' | 'password' =
+        opts?.authProvider ||
+        (fbUser.providerData.some((p) => p.providerId === 'google.com') ? 'google' : 'password');
+      const resolvedDisplayName = (
+        opts?.displayName?.trim() ||
+        fbUser.displayName?.trim() ||
+        derivedUsername
+      ).slice(0, 120);
+
+      const newReq: AccessRequest = stripUndefinedDeep({
+        id: fbUser.uid,
+        uid: fbUser.uid,
+        email: emailLower.slice(0, 160),
+        username: derivedUsername,
+        displayName: resolvedDisplayName,
+        authProvider: inferredProvider,
+        requestedRole: opts?.requestedRole,
+        requestedNote: opts?.requestedNote?.trim() || undefined,
+        status: 'pending',
+        createdAt: nowIso,
+        createdBy: fbUser.uid,
+        updatedAt: nowIso,
+        updatedBy: fbUser.uid
+      });
+
+      await setDoc(reqRef, newReq);
+      return newReq;
+    },
+    []
+  );
 
   /**
    * Resolves a persistent Practice E2EE Vault Key stored in Cloud Firestore (`system_settings/main`)
@@ -744,24 +831,80 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (fbUser && authModeRef.current === 'none' && !googleAuthInProgressRef.current) {
         try {
           const fbProfile = await resolveFirebaseStaffProfile(fbUser);
-          const vault = await resolvePersistentCloudVaultKey(fbUser, fbProfile.role === 'SUPER_ADMIN');
-          const hydratedProfile: UserAccount = {
-            ...fbProfile,
-            e2eeFingerprint: vault.fingerprint
-          };
-          setCurrentUser(hydratedProfile);
-          setAuthMode('firebase');
-          await ensureCloudBaselineSeeded(fbUser, hydratedProfile);
+          if (!fbProfile) {
+            const req = await ensurePendingAccessRequest(fbUser);
+            setPendingAccessRequest(req);
+            setCurrentUser(null);
+            setAuthMode('none');
+          } else {
+            const vault = await resolvePersistentCloudVaultKey(fbUser, fbProfile.role === 'SUPER_ADMIN');
+            const hydratedProfile: UserAccount = {
+              ...fbProfile,
+              e2eeFingerprint: vault.fingerprint
+            };
+            setPendingAccessRequest(null);
+            setCurrentUser(hydratedProfile);
+            setAuthMode('firebase');
+            await ensureCloudBaselineSeeded(fbUser, hydratedProfile);
+          }
         } catch (err) {
           notifyToast(err instanceof Error ? err.message : 'Gagal memverifikasi akun Firebase.', 'error');
         }
       } else if (!fbUser) {
         setCloudSynced(false);
+        setPendingAccessRequest(null);
+        pendingApprovalAutoUnlockRef.current = false;
       }
       setLoading(false);
     });
     return () => unsub();
-  }, [ensureCloudBaselineSeeded, notifyToast, resolveFirebaseStaffProfile, resolvePersistentCloudVaultKey]);
+  }, [ensureCloudBaselineSeeded, ensurePendingAccessRequest, notifyToast, resolveFirebaseStaffProfile, resolvePersistentCloudVaultKey]);
+
+  // Real-time listener on own access_requests/{uid} while waiting for Super Admin approval
+  useEffect(() => {
+    if (!firebaseUser || currentUser) return;
+    const reqRef = doc(db, 'access_requests', firebaseUser.uid);
+    const unsub = onSnapshot(
+      reqRef,
+      async (snap) => {
+        if (!snap.exists()) return;
+        const reqData = { ...(snap.data() as AccessRequest), id: snap.id };
+        setPendingAccessRequest(reqData);
+
+        if (reqData.status === 'approved' && !pendingApprovalAutoUnlockRef.current) {
+          pendingApprovalAutoUnlockRef.current = true;
+          try {
+            const fbProfile = await resolveFirebaseStaffProfile(firebaseUser);
+            if (!fbProfile) {
+              pendingApprovalAutoUnlockRef.current = false;
+              return;
+            }
+            const vault = await resolvePersistentCloudVaultKey(firebaseUser, fbProfile.role === 'SUPER_ADMIN');
+            const hydratedProfile: UserAccount = {
+              ...fbProfile,
+              e2eeFingerprint: vault.fingerprint
+            };
+            setPendingAccessRequest(null);
+            setCurrentUser(hydratedProfile);
+            setAuthMode('firebase');
+            setActiveView('dashboard');
+            await ensureCloudBaselineSeeded(firebaseUser, hydratedProfile);
+            notifyToast(
+              `Akun Anda telah disetujui Super Admin sebagai ${ROLE_LABELS[hydratedProfile.role]}. Selamat datang!`,
+              'success'
+            );
+          } catch (err) {
+            pendingApprovalAutoUnlockRef.current = false;
+            notifyToast(err instanceof Error ? err.message : 'Gagal membuka sesi setelah persetujuan.', 'error');
+          }
+        }
+      },
+      () => {
+        // Ignore transient permission errors before request doc exists
+      }
+    );
+    return () => unsub();
+  }, [currentUser, ensureCloudBaselineSeeded, firebaseUser, notifyToast, resolveFirebaseStaffProfile, resolvePersistentCloudVaultKey]);
 
   // Subscribe to ALL role-permitted Cloud Firestore collections in real time whenever firebaseUser & currentUser are active
   const currentUserId = currentUser?.id || '';
@@ -882,12 +1025,23 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
 
         const profile = await resolveFirebaseStaffProfile(fbUser);
+        if (!profile) {
+          const req = await ensurePendingAccessRequest(fbUser, { authProvider: 'password' });
+          setFirebaseUser(fbUser);
+          setCurrentUser(null);
+          setAuthMode('none');
+          setPendingAccessRequest(req);
+          notifyToast('Akun Anda sedang menunggu persetujuan Super Admin dan penentuan role.', 'info');
+          return;
+        }
+
         const vault = await resolvePersistentCloudVaultKey(fbUser, profile.role === 'SUPER_ADMIN');
         const fullProfile: UserAccount = {
           ...profile,
           e2eeFingerprint: vault.fingerprint
         };
 
+        setPendingAccessRequest(null);
         setFirebaseUser(fbUser);
         setCurrentUser(fullProfile);
         setAuthMode('firebase');
@@ -911,6 +1065,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     },
     [
       ensureCloudBaselineSeeded,
+      ensurePendingAccessRequest,
       notifyToast,
       resolveFirebaseStaffProfile,
       resolvePersistentCloudVaultKey,
@@ -929,12 +1084,26 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         throw new Error(formatFirebaseAuthError(err));
       }
       const profile = await resolveFirebaseStaffProfile(fbUser);
+      if (!profile) {
+        const req = await ensurePendingAccessRequest(fbUser, { authProvider: 'google' });
+        setFirebaseUser(fbUser);
+        setCurrentUser(null);
+        setAuthMode('none');
+        setPendingAccessRequest(req);
+        notifyToast(
+          'Permintaan akses akun Google Anda telah dikirim ke Super Admin untuk persetujuan & penentuan role.',
+          'info'
+        );
+        return;
+      }
+
       const vault = await resolvePersistentCloudVaultKey(fbUser, profile.role === 'SUPER_ADMIN');
 
       const fullProfile: UserAccount = {
         ...profile,
         e2eeFingerprint: vault.fingerprint
       };
+      setPendingAccessRequest(null);
       setFirebaseUser(fbUser);
       setCurrentUser(fullProfile);
       setAuthMode('firebase');
@@ -945,7 +1114,182 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     } finally {
       googleAuthInProgressRef.current = false;
     }
-  }, [ensureCloudBaselineSeeded, notifyToast, resolveFirebaseStaffProfile, resolvePersistentCloudVaultKey, writeCloudAuditLog]);
+  }, [ensureCloudBaselineSeeded, ensurePendingAccessRequest, notifyToast, resolveFirebaseStaffProfile, resolvePersistentCloudVaultKey, writeCloudAuditLog]);
+
+  const registerWithEmailFirebase = useCallback(
+    async (payload: {
+      displayName: string;
+      email: string;
+      password: string;
+      requestedRole?: RoleCode;
+      requestedNote?: string;
+    }) => {
+      const displayName = payload.displayName.trim();
+      const email = payload.email.trim().toLowerCase();
+      if (!displayName || !email || !payload.password) {
+        throw new Error('Nama lengkap, email, dan kata sandi wajib diisi.');
+      }
+      if (payload.password.length < 6) {
+        throw new Error('Kata sandi minimal 6 karakter.');
+      }
+
+      googleAuthInProgressRef.current = true;
+      try {
+        let fbUser: FirebaseUser;
+        try {
+          const cred = await registerWithEmailPasswordFirebase(email, payload.password);
+          fbUser = cred.user;
+        } catch (err) {
+          throw new Error(formatFirebaseAuthError(err));
+        }
+
+        const req = await ensurePendingAccessRequest(fbUser, {
+          displayName,
+          authProvider: 'password',
+          requestedRole: payload.requestedRole,
+          requestedNote: payload.requestedNote
+        });
+        setFirebaseUser(fbUser);
+        setCurrentUser(null);
+        setAuthMode('none');
+        setPendingAccessRequest(req);
+        notifyToast(
+          'Pendaftaran berhasil dikirim! Menunggu persetujuan dan penentuan role dari Super Admin.',
+          'success'
+        );
+      } finally {
+        googleAuthInProgressRef.current = false;
+      }
+    },
+    [ensurePendingAccessRequest, notifyToast]
+  );
+
+  const resubmitAccessRequest = useCallback(
+    async (payload: { displayName: string; requestedRole?: RoleCode; requestedNote?: string }) => {
+      if (!firebaseUser || !pendingAccessRequest) {
+        throw new Error('Sesi pendaftaran tidak ditemukan.');
+      }
+      const displayName = payload.displayName.trim();
+      if (!displayName) {
+        throw new Error('Nama lengkap wajib diisi.');
+      }
+      const nowIso = new Date().toISOString();
+      const updatedReq: AccessRequest = stripUndefinedDeep({
+        ...pendingAccessRequest,
+        displayName: displayName.slice(0, 120),
+        requestedRole: payload.requestedRole || pendingAccessRequest.requestedRole,
+        requestedNote: payload.requestedNote?.trim() ?? pendingAccessRequest.requestedNote,
+        status: 'pending',
+        updatedAt: nowIso,
+        updatedBy: firebaseUser.uid
+      });
+      await setDoc(doc(db, 'access_requests', firebaseUser.uid), updatedReq);
+      setPendingAccessRequest(updatedReq);
+      notifyToast('Permintaan akses dikirim ulang ke Super Admin.', 'success');
+    },
+    [firebaseUser, notifyToast, pendingAccessRequest]
+  );
+
+  const approveAccessRequest = useCallback(
+    async (req: AccessRequest, role: RoleCode, opts?: { strNumber?: string; sipNumber?: string }) => {
+      if (!currentUser || currentUser.role !== 'SUPER_ADMIN') {
+        throw new Error('Hanya Super Admin yang dapat menyetujui permintaan akses.');
+      }
+      const nowIso = new Date().toISOString();
+      const normalizedEmail = req.email.trim().toLowerCase();
+      const newUserDoc: UserAccount = stripUndefinedDeep({
+        id: req.uid,
+        username: req.username,
+        displayName: req.displayName,
+        email: normalizedEmail,
+        role,
+        strNumber: opts?.strNumber?.trim() || '',
+        sipNumber: opts?.sipNumber?.trim() || '',
+        signatureUrl: '',
+        active: true,
+        e2eeFingerprint: e2eeFingerprint || undefined,
+        createdAt: nowIso,
+        createdBy: currentUser.id,
+        updatedAt: nowIso,
+        updatedBy: currentUser.id
+      });
+
+      const updatedReq: AccessRequest = stripUndefinedDeep({
+        ...req,
+        status: 'approved',
+        assignedRole: role,
+        reviewedBy: currentUser.id,
+        reviewedByName: currentUser.displayName,
+        reviewedAt: nowIso,
+        updatedAt: nowIso,
+        updatedBy: currentUser.id
+      });
+
+      const ops: Array<{ type: 'set'; col: string; id: string; data: Record<string, unknown> }> = [
+        { type: 'set', col: 'users', id: req.uid, data: newUserDoc as unknown as Record<string, unknown> },
+        { type: 'set', col: 'access_requests', id: req.id, data: updatedReq as unknown as Record<string, unknown> }
+      ];
+
+      if (
+        normalizedEmail &&
+        normalizedEmail.includes('@') &&
+        normalizedEmail !== BOOTSTRAP_SUPERADMIN_EMAIL &&
+        !normalizedEmail.endsWith('@staff.obgyn-pms.app')
+      ) {
+        ops.push({
+          type: 'set',
+          col: 'staff_emails',
+          id: normalizedEmail,
+          data: buildStaffEmailDoc(newUserDoc, currentUser.id)
+        });
+      }
+
+      await commitBatchedOps(ops);
+      await writeCloudAuditLog(
+        currentUser,
+        'APPROVE_ACCESS_REQUEST',
+        'access_requests',
+        req.id,
+        req.status,
+        `Disetujui sebagai ${ROLE_LABELS[role]} (${req.email})`
+      );
+      notifyToast(
+        `${req.displayName} disetujui sebagai ${ROLE_LABELS[role]} dan langsung aktif di sistem.`,
+        'success'
+      );
+    },
+    [currentUser, e2eeFingerprint, notifyToast, writeCloudAuditLog]
+  );
+
+  const rejectAccessRequest = useCallback(
+    async (req: AccessRequest, reason?: string) => {
+      if (!currentUser || currentUser.role !== 'SUPER_ADMIN') {
+        throw new Error('Hanya Super Admin yang dapat menolak permintaan akses.');
+      }
+      const nowIso = new Date().toISOString();
+      const updatedReq: AccessRequest = stripUndefinedDeep({
+        ...req,
+        status: 'rejected',
+        rejectionReason: reason?.trim() || 'Permintaan akses tidak disetujui oleh Super Admin.',
+        reviewedBy: currentUser.id,
+        reviewedByName: currentUser.displayName,
+        reviewedAt: nowIso,
+        updatedAt: nowIso,
+        updatedBy: currentUser.id
+      });
+      await setDoc(doc(db, 'access_requests', req.id), updatedReq);
+      await writeCloudAuditLog(
+        currentUser,
+        'REJECT_ACCESS_REQUEST',
+        'access_requests',
+        req.id,
+        req.status,
+        `Ditolak: ${updatedReq.rejectionReason}`
+      );
+      notifyToast(`Permintaan akses ${req.displayName} ditolak.`, 'info');
+    },
+    [currentUser, notifyToast, writeCloudAuditLog]
+  );
 
   const logout = useCallback(async () => {
     if (authMode === 'staff' && bearerTokenRef.current) {
@@ -964,8 +1308,10 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     bearerTokenRef.current = null;
     vaultKeyRef.current = null;
     seededUidRef.current = null;
+    pendingApprovalAutoUnlockRef.current = false;
     setCurrentUser(null);
     setFirebaseUser(null);
+    setPendingAccessRequest(null);
     setCloudSynced(false);
     setAuthMode('none');
     setE2eeUnlocked(false);
@@ -1705,6 +2051,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     dbState,
     currentUser,
     firebaseUser,
+    pendingAccessRequest,
     authMode,
     cloudSynced,
     loading,
@@ -1725,6 +2072,10 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setPrintPayload,
     loginStaff,
     loginGoogleFirebase,
+    registerWithEmailFirebase,
+    resubmitAccessRequest,
+    approveAccessRequest,
+    rejectAccessRequest,
     logout,
     upsertRecord,
     deleteRecord,

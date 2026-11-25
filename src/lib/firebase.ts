@@ -100,6 +100,10 @@ export async function signInWithEmailPasswordFirebase(email: string, password: s
   return signInWithEmailAndPassword(auth, email, password);
 }
 
+export async function registerWithEmailPasswordFirebase(email: string, password: string) {
+  return createUserWithEmailAndPassword(auth, email, password);
+}
+
 /**
  * Creates (or links existing) a Firebase Auth Email/Password user using a secondary
  * Firebase App instance so the currently signed-in Super Admin session is never disrupted.

@@ -153,6 +153,11 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
   const unreadCount = useMemo(() => myNotifications.filter((n) => !n.read).length, [myNotifications]);
 
+  const pendingApprovalCount = useMemo(() => {
+    if (currentUser?.role !== 'SUPER_ADMIN') return 0;
+    return (dbState.access_requests || []).filter((r) => r.status === 'pending').length;
+  }, [currentUser?.role, dbState.access_requests]);
+
   const handleSelectNav = (view: NavView) => {
     setActiveView(view);
     setMobileMenuOpen(false);
@@ -228,7 +233,15 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                         isActive ? 'text-teal-700' : 'text-slate-400'
                       }`}
                     />
-                    <span className="truncate">{item.label}</span>
+                    <span className="truncate flex-1">{item.label}</span>
+                    {item.view === 'settings-users' && pendingApprovalCount > 0 && (
+                      <span
+                        title={`${pendingApprovalCount} permintaan akun menunggu persetujuan`}
+                        className="ml-auto min-w-[20px] h-5 px-1.5 rounded-full bg-amber-500 text-white text-[10px] font-bold font-mono tabular-nums inline-flex items-center justify-center shrink-0"
+                      >
+                        {pendingApprovalCount}
+                      </span>
+                    )}
                   </button>
                 );
               })}

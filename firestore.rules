@@ -220,6 +220,26 @@ service cloud.firestore {
         isValidAuditMetadata(data);
     }
 
+    function isValidAccessRequest(data) {
+      return data.keys().hasAll([
+          'id', 'uid', 'email', 'username', 'displayName', 'authProvider', 'status',
+          'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'uid', 'email', 'username', 'displayName', 'authProvider',
+          'requestedNote', 'requestedRole', 'status', 'assignedRole',
+          'reviewedBy', 'reviewedByName', 'reviewedAt', 'rejectionReason',
+          'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+        ]) &&
+        isValidAuditMetadata(data) &&
+        isValidId(data.uid) &&
+        isNonEmptyString(data.email, 160) &&
+        isNonEmptyString(data.username, 60) &&
+        isNonEmptyString(data.displayName, 120) &&
+        data.authProvider in ['google', 'password'] &&
+        data.status in ['pending', 'approved', 'rejected'];
+    }
+
     // 1. Users (PII & E2EE wrapped keys strictly restricted to owner or Super Admin)
     match /users/{userId} {
       allow get: if isValidId(userId) && (isSuperAdmin() || (isSignedIn() && request.auth.uid == userId));
@@ -244,6 +264,37 @@ service cloud.firestore {
       allow list: if isSuperAdmin();
       allow create, update: if isValidEmailDocId(emailId) && isSuperAdmin() && isValidStaffEmail(incoming());
       allow delete: if isValidEmailDocId(emailId) && isSuperAdmin() && emailId != 'grimoireids@gmail.com';
+    }
+
+    // 1c. Pending User Access Requests (Self-registration or unregistered login awaiting Super Admin approval)
+    match /access_requests/{requestId} {
+      allow get: if isValidId(requestId) && (isSuperAdmin() || (isSignedIn() && request.auth.uid == requestId));
+      allow list: if isSuperAdmin() && request.query.limit <= 200;
+      allow create: if isValidId(requestId) &&
+        isSignedIn() &&
+        request.auth.uid == requestId &&
+        isValidAccessRequest(incoming()) &&
+        incoming().id == request.auth.uid &&
+        incoming().uid == request.auth.uid &&
+        incoming().status == 'pending' &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().updatedBy == request.auth.uid &&
+        !('assignedRole' in incoming()) &&
+        !('reviewedBy' in incoming()) &&
+        !('reviewedAt' in incoming());
+      allow update: if isValidId(requestId) &&
+        isValidAccessRequest(incoming()) &&
+        immutableAuditFieldsUnchanged() &&
+        incoming().uid == existing().uid && (
+          isSuperAdmin() ||
+          (isSignedIn() &&
+            request.auth.uid == requestId &&
+            existing().status == 'rejected' &&
+            incoming().status == 'pending' &&
+            incoming().updatedBy == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'requestedNote', 'requestedRole', 'status', 'updatedAt', 'updatedBy']))
+        );
+      allow delete: if isValidId(requestId) && isSuperAdmin();
     }
 
     // 2-3. Roles & Permissions

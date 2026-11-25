@@ -8,6 +8,7 @@ import { Lock } from 'lucide-react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { PracticeProvider, usePractice } from './context/PracticeContext';
 import { LoginScreen } from './components/LoginScreen';
+import { PendingApprovalScreen } from './components/PendingApprovalScreen';
 import { Layout } from './components/Layout';
 import { PrintModal } from './components/PrintModal';
 import { DashboardView } from './components/DashboardView';
@@ -22,7 +23,7 @@ import { SettingsModule } from './components/SettingsModule';
 import { canAccessView } from './utils/rbac';
 
 const WorkspaceRouter: React.FC = () => {
-  const { currentUser, loading, activeView, setActiveView } = usePractice();
+  const { currentUser, pendingAccessRequest, loading, activeView, setActiveView } = usePractice();
 
   if (loading) {
     return (
@@ -36,6 +37,9 @@ const WorkspaceRouter: React.FC = () => {
   }
 
   if (!currentUser) {
+    if (pendingAccessRequest) {
+      return <PendingApprovalScreen />;
+    }
     return <LoginScreen />;
   }
 
