@@ -18,8 +18,11 @@ import {
   FIREBASE_VAULT_CONTEXT,
   handleFirestoreError,
   OperationType,
+  provisionFirebaseEmailPasswordUser,
+  signInWithEmailPasswordFirebase,
   signInWithGoogleFirebase,
-  signOutFirebase
+  signOutFirebase,
+  usernameToStaffAuthEmail
 } from '../lib/firebase';
 import type {
   AuditLog,
@@ -52,6 +55,36 @@ const PATIENT_SENSITIVE_FIELDS = ['nik', 'phone', 'email', 'address', 'familyPho
 const RME_SENSITIVE_FIELDS = ['doctorNotes'];
 const BOOTSTRAP_SUPERADMIN_EMAIL = 'grimoireids@gmail.com';
 const CLOUD_VAULT_SALT_B64 = 'b2JneW4tc3BvZy1jbG91ZC1lMmVlLXNhbHQtdjE=';
+
+const BUILT_IN_STAFF_ACCOUNTS: Array<{
+  username: string;
+  password: string;
+  displayName: string;
+  role: RoleCode;
+  strNumber?: string;
+  sipNumber?: string;
+}> = [
+  {
+    username: 'superman',
+    password: 'superman123',
+    displayName: 'Super Admin Praktik',
+    role: 'SUPER_ADMIN'
+  },
+  {
+    username: 'dokter',
+    password: 'dokter123',
+    displayName: 'dr. Kartika Wulandari, Sp.OG (K)',
+    role: 'DOKTER_SPOG',
+    strNumber: '31.2.1.301.4.23.189402',
+    sipNumber: '446/SIP-SpOG/2025/0142'
+  },
+  {
+    username: 'asisten',
+    password: 'asisten123',
+    displayName: 'Ns. Rani Permata, S.Kep',
+    role: 'ASISTEN_DOKTER'
+  }
+];
 
 const NEWEST_FIRST_COLLECTIONS = new Set<CollectionName>([
   'patients',
@@ -342,6 +375,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const authModeRef = useRef<'none' | 'staff' | 'firebase'>('none');
   const dbStateRef = useRef<PracticeDatabase>(dbState);
   const seededUidRef = useRef<string | null>(null);
+  const googleAuthInProgressRef = useRef<boolean>(false);
 
   useEffect(() => {
     authModeRef.current = authMode;
@@ -491,12 +525,81 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         if (ops.length > 0) {
           await commitBatchedOps(ops);
         }
+
+        // Automatically provision built-in staff Email/Password Firebase accounts (superman, dokter, asisten)
+        // so non-Google logins authenticate directly into Firebase & sync with Cloud Firestore in real-time.
+        try {
+          const existingUsersSnap = await getDocs(query(collection(db, 'users'), limit(500)));
+          const existingUsers = existingUsersSnap.docs.map((d) => ({ ...(d.data() as Partial<UserAccount>), id: d.id }));
+          const staffOps: Array<
+            | { type: 'set'; col: string; id: string; data: Record<string, unknown> }
+            | { type: 'delete'; col: string; id: string }
+          > = [];
+
+          for (const acc of BUILT_IN_STAFF_ACCOUNTS) {
+            const alreadyLinked = existingUsers.find(
+              (u) => (u.username || '').toLowerCase() === acc.username && !String(u.id).startsWith('usr-')
+            );
+            if (alreadyLinked) continue;
+            try {
+              const provisioned = await provisionFirebaseEmailPasswordUser(acc.username, acc.password);
+              const staffDoc: UserAccount = {
+                id: provisioned.uid,
+                username: acc.username,
+                displayName: acc.displayName,
+                email: provisioned.authEmail,
+                role: acc.role,
+                strNumber: acc.strNumber || '',
+                sipNumber: acc.sipNumber || '',
+                signatureUrl: '',
+                active: true,
+                e2eeFingerprint: profile.e2eeFingerprint || 'CLOUD-MANAGED',
+                createdAt: nowIso,
+                createdBy: fbUser.uid,
+                updatedAt: nowIso,
+                updatedBy: fbUser.uid
+              };
+              staffOps.push({
+                type: 'set',
+                col: 'users',
+                id: provisioned.uid,
+                data: staffDoc as unknown as Record<string, unknown>
+              });
+              // Remove unlinked legacy placeholder doc if present
+              const legacyPlaceholder = existingUsers.find(
+                (u) => (u.username || '').toLowerCase() === acc.username && String(u.id).startsWith('usr-')
+              );
+              if (legacyPlaceholder && legacyPlaceholder.id !== fbUser.uid) {
+                staffOps.push({ type: 'delete', col: 'users', id: legacyPlaceholder.id });
+              }
+            } catch (provErr: unknown) {
+              const code =
+                typeof provErr === 'object' && provErr !== null && 'code' in provErr
+                  ? String((provErr as { code?: unknown }).code || '')
+                  : '';
+              if (code === 'auth/operation-not-allowed') {
+                notifyToast(
+                  'Aktifkan metode login Email/Password di Firebase Console (Authentication → Sign-in method) agar login username (superman/dokter/asisten) otomatis terhubung ke Firebase.',
+                  'info'
+                );
+                break;
+              }
+              // If password was changed previously (auth/invalid-credential or auth/wrong-password), skip silently
+            }
+          }
+
+          if (staffOps.length > 0) {
+            await commitBatchedOps(staffOps);
+          }
+        } catch {
+          // Non-blocking staff provision check
+        }
       } catch (err) {
         seededUidRef.current = null;
         console.warn('Cloud baseline seed skipped or partial:', err);
       }
     },
-    []
+    [notifyToast]
   );
 
   const resolveFirebaseStaffProfile = useCallback(async (fbUser: FirebaseUser): Promise<UserAccount> => {
@@ -638,7 +741,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (fbUser) => {
       setFirebaseUser(fbUser);
-      if (fbUser && authModeRef.current === 'none') {
+      if (fbUser && authModeRef.current === 'none' && !googleAuthInProgressRef.current) {
         try {
           const fbProfile = await resolveFirebaseStaffProfile(fbUser);
           const vault = await resolvePersistentCloudVaultKey(fbUser, fbProfile.role === 'SUPER_ADMIN');
@@ -744,75 +847,104 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const loginStaff = useCallback(
     async (username: string, password: string) => {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
-      });
-      const contentType = res.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) {
-        throw new Error(
-          `Endpoint API autentikasi tidak merespons JSON (HTTP ${res.status}). Pastikan backend Serverless Function /api aktif pada deployment Vercel Anda.`
+      const normalizedInput = username.trim().toLowerCase();
+      if (!normalizedInput || !password) {
+        throw new Error('Masukkan username dan kata sandi akun Anda.');
+      }
+
+      const staffAuthEmail = usernameToStaffAuthEmail(normalizedInput);
+      googleAuthInProgressRef.current = true;
+      try {
+        let fbUser: FirebaseUser;
+        try {
+          const cred = await signInWithEmailPasswordFirebase(staffAuthEmail, password);
+          fbUser = cred.user;
+        } catch (err: unknown) {
+          const code =
+            typeof err === 'object' && err !== null && 'code' in err
+              ? String((err as { code?: unknown }).code || '')
+              : '';
+          if (code === 'auth/operation-not-allowed') {
+            throw new Error(
+              'Login Email/Password belum diaktifkan di Firebase Console. Buka Firebase Console → Authentication → Sign-in method → aktifkan Email/Password, lalu masuk sekali lewat tombol Google agar akun username otomatis terhubung ke Firebase.'
+            );
+          }
+          if (code === 'auth/too-many-requests') {
+            throw new Error('Terlalu banyak percobaan login. Tunggu beberapa saat lalu coba lagi.');
+          }
+          const isBuiltIn = BUILT_IN_STAFF_ACCOUNTS.some((a) => a.username === normalizedInput);
+          if (isBuiltIn) {
+            throw new Error(
+              `Gagal masuk ke Firebase dengan username "${normalizedInput}". Pastikan kata sandi benar, provider Email/Password sudah aktif di Firebase Console, dan Super Admin sudah masuk sekali lewat Google (grimoireids@gmail.com) untuk mengaktifkan akun staf di Firebase.`
+            );
+          }
+          throw new Error('Username atau kata sandi salah, atau akun belum didaftarkan di Firebase oleh Super Admin.');
+        }
+
+        const profile = await resolveFirebaseStaffProfile(fbUser);
+        const vault = await resolvePersistentCloudVaultKey(fbUser, profile.role === 'SUPER_ADMIN');
+        const fullProfile: UserAccount = {
+          ...profile,
+          e2eeFingerprint: vault.fingerprint
+        };
+
+        setFirebaseUser(fbUser);
+        setCurrentUser(fullProfile);
+        setAuthMode('firebase');
+        setActiveView('dashboard');
+        await ensureCloudBaselineSeeded(fbUser, fullProfile);
+        await writeCloudAuditLog(
+          fullProfile,
+          'LOGIN_STAFF_FIREBASE',
+          'auth',
+          fbUser.uid,
+          undefined,
+          `Login Username/Password langsung ke Cloud Firestore (${fullProfile.username})`
         );
+        notifyToast(
+          `Selamat datang, ${fullProfile.displayName}. Terhubung real-time ke database Cloud Firestore.`,
+          'success'
+        );
+      } finally {
+        googleAuthInProgressRef.current = false;
       }
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Login gagal.');
-      }
-
-      bearerTokenRef.current = data.token;
-      const user = data.user as UserAccount;
-
-      if (user.e2eeSalt && user.e2eeWrappedKey) {
-        const kek = await deriveUserKek(password, user.e2eeSalt);
-        const unwrapped = await unwrapVaultKeyForAccount(user.e2eeWrappedKey, kek);
-        vaultKeyRef.current = unwrapped.key;
-        setE2eeFingerprint(unwrapped.fingerprint);
-        setE2eeUnlocked(true);
-      }
-
-      setCurrentUser(user);
-      setAuthMode('staff');
-      setActiveView('dashboard');
-      let hydratedState: PracticeDatabase | undefined;
-      if (data.initialState) {
-        const decrypted = await decryptDatabaseState(data.initialState as PracticeDatabase, vaultKeyRef.current);
-        hydratedState = decrypted;
-        setDbState(decrypted);
-      } else {
-        await fetchStaffStoreState();
-      }
-      // Automatically link & seed Cloud Firestore if a Firebase Auth session is already active in this browser
-      if (auth.currentUser && user.role === 'SUPER_ADMIN') {
-        void ensureCloudBaselineSeeded(auth.currentUser, user, hydratedState || dbStateRef.current);
-      }
-      notifyToast(`Selamat datang, ${user.displayName}. Vault E2EE terbuka.`, 'success');
     },
-    [decryptDatabaseState, ensureCloudBaselineSeeded, fetchStaffStoreState, notifyToast]
+    [
+      ensureCloudBaselineSeeded,
+      notifyToast,
+      resolveFirebaseStaffProfile,
+      resolvePersistentCloudVaultKey,
+      writeCloudAuditLog
+    ]
   );
 
   const loginGoogleFirebase = useCallback(async () => {
-    let fbUser: FirebaseUser;
+    googleAuthInProgressRef.current = true;
     try {
-      const result = await signInWithGoogleFirebase();
-      fbUser = result.user;
-    } catch (err) {
-      throw new Error(formatFirebaseAuthError(err));
-    }
-    const profile = await resolveFirebaseStaffProfile(fbUser);
-    const vault = await resolvePersistentCloudVaultKey(fbUser, profile.role === 'SUPER_ADMIN');
+      let fbUser: FirebaseUser;
+      try {
+        const result = await signInWithGoogleFirebase();
+        fbUser = result.user;
+      } catch (err) {
+        throw new Error(formatFirebaseAuthError(err));
+      }
+      const profile = await resolveFirebaseStaffProfile(fbUser);
+      const vault = await resolvePersistentCloudVaultKey(fbUser, profile.role === 'SUPER_ADMIN');
 
-    const fullProfile: UserAccount = {
-      ...profile,
-      e2eeFingerprint: vault.fingerprint
-    };
-    setFirebaseUser(fbUser);
-    setCurrentUser(fullProfile);
-    setAuthMode('firebase');
-    setActiveView('dashboard');
-    await ensureCloudBaselineSeeded(fbUser, fullProfile);
-    await writeCloudAuditLog(fullProfile, 'LOGIN_FIREBASE', 'auth', fbUser.uid, undefined, `Login Google Cloud Firestore (${fbUser.email})`);
-    notifyToast(`Login berhasil sebagai ${fullProfile.displayName}. Seluruh data database online tersinkron real-time.`, 'success');
+      const fullProfile: UserAccount = {
+        ...profile,
+        e2eeFingerprint: vault.fingerprint
+      };
+      setFirebaseUser(fbUser);
+      setCurrentUser(fullProfile);
+      setAuthMode('firebase');
+      setActiveView('dashboard');
+      await ensureCloudBaselineSeeded(fbUser, fullProfile);
+      await writeCloudAuditLog(fullProfile, 'LOGIN_FIREBASE', 'auth', fbUser.uid, undefined, `Login Google Cloud Firestore (${fbUser.email})`);
+      notifyToast(`Login berhasil sebagai ${fullProfile.displayName}. Seluruh data database online tersinkron real-time.`, 'success');
+    } finally {
+      googleAuthInProgressRef.current = false;
+    }
   }, [ensureCloudBaselineSeeded, notifyToast, resolveFirebaseStaffProfile, resolvePersistentCloudVaultKey, writeCloudAuditLog]);
 
   const logout = useCallback(async () => {
@@ -991,54 +1123,72 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         throw new Error('Nama lengkap wajib diisi.');
       }
 
-      let createdUser: UserAccount;
-
-      if (authMode === 'staff' && bearerTokenRef.current) {
-        const res = await fetch('/api/auth/users', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${bearerTokenRef.current}`
-          },
-          body: JSON.stringify(payload)
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Gagal membuat akun pengguna.');
-        createdUser = data.user as UserAccount;
-      } else {
-        const dup = dbStateRef.current.users.find(
-          (u) =>
-            u.username.toLowerCase() === normUser ||
-            (payload.email.trim() && u.email.toLowerCase() === payload.email.trim().toLowerCase())
-        );
-        if (dup) {
-          throw new Error('Username atau email sudah digunakan oleh akun lain.');
-        }
-        const nowIso = new Date().toISOString();
-        createdUser = {
-          id: `usr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          username: normUser,
-          displayName: payload.displayName.trim(),
-          email: payload.email.trim() || `${normUser}@klinikspog.id`,
-          role: payload.role,
-          strNumber: payload.strNumber?.trim() || '',
-          sipNumber: payload.sipNumber?.trim() || '',
-          signatureUrl: payload.signatureUrl || '',
-          active: true,
-          e2eeFingerprint: e2eeFingerprint || 'CLOUD-MANAGED',
-          createdAt: nowIso,
-          createdBy: currentUser.id,
-          updatedAt: nowIso,
-          updatedBy: currentUser.id
-        };
+      if (!payload.password || payload.password.length < 6) {
+        throw new Error('Kata sandi minimal 6 karakter untuk autentikasi Firebase.');
       }
 
-      // Persist to Cloud Firestore `users` and `staff_emails`
+      const dup = dbStateRef.current.users.find(
+        (u) =>
+          u.username.toLowerCase() === normUser ||
+          (payload.email.trim() && u.email.toLowerCase() === payload.email.trim().toLowerCase())
+      );
+      if (dup) {
+        throw new Error('Username atau email sudah digunakan oleh akun lain.');
+      }
+
+      let firebaseUid = `usr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      let staffAuthEmail = usernameToStaffAuthEmail(normUser);
+
+      if (auth.currentUser) {
+        try {
+          const provisioned = await provisionFirebaseEmailPasswordUser(normUser, payload.password);
+          firebaseUid = provisioned.uid;
+          staffAuthEmail = provisioned.authEmail;
+        } catch (err: unknown) {
+          const code =
+            typeof err === 'object' && err !== null && 'code' in err
+              ? String((err as { code?: unknown }).code || '')
+              : '';
+          if (code === 'auth/operation-not-allowed') {
+            throw new Error(
+              'Aktifkan metode login Email/Password terlebih dahulu di Firebase Console (Authentication → Sign-in method) agar akun baru bisa login tanpa Google.'
+            );
+          }
+          if (code === 'auth/email-already-in-use' || code === 'auth/invalid-credential' || code === 'auth/wrong-password') {
+            throw new Error(
+              `Username "${normUser}" sudah terdaftar di Firebase Auth dengan kata sandi lain. Gunakan username berbeda.`
+            );
+          }
+          throw new Error(
+            err instanceof Error ? err.message : 'Gagal mendaftarkan kredensial pengguna ke Firebase Auth.'
+          );
+        }
+      }
+
+      const nowIso = new Date().toISOString();
+      const createdUser: UserAccount = {
+        id: firebaseUid,
+        username: normUser,
+        displayName: payload.displayName.trim(),
+        email: payload.email.trim() || staffAuthEmail,
+        role: payload.role,
+        strNumber: payload.strNumber?.trim() || '',
+        sipNumber: payload.sipNumber?.trim() || '',
+        signatureUrl: payload.signatureUrl || '',
+        active: true,
+        e2eeFingerprint: e2eeFingerprint || 'CLOUD-MANAGED',
+        createdAt: nowIso,
+        createdBy: currentUser.id,
+        updatedAt: nowIso,
+        updatedBy: currentUser.id
+      };
+
+      // Persist directly to Cloud Firestore `users/{firebaseUid}` and optional Google `staff_emails/{email}`
       if (auth.currentUser) {
         try {
           await setDoc(doc(db, 'users', createdUser.id), stripUndefinedDeep(createdUser));
-          if (createdUser.email && createdUser.email.trim()) {
-            const emailLower = createdUser.email.trim().toLowerCase();
+          if (payload.email && payload.email.trim()) {
+            const emailLower = payload.email.trim().toLowerCase();
             await setDoc(doc(db, 'staff_emails', emailLower), buildStaffEmailDoc(createdUser, currentUser.id));
           }
           void writeCloudAuditLog(
@@ -1060,7 +1210,10 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         users: [createdUser, ...prev.users.filter((u) => u.id !== createdUser.id)]
       }));
 
-      notifyToast(`Akun ${createdUser.displayName} berhasil dibuat dan disimpan.`, 'success');
+      notifyToast(
+        `Akun ${createdUser.displayName} berhasil dibuat di Firebase. Bisa langsung login dengan username "${createdUser.username}" atau email Google.`,
+        'success'
+      );
     },
     [authMode, currentUser, e2eeFingerprint, notifyToast, writeCloudAuditLog]
   );
@@ -1480,6 +1633,13 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 updatedAt: String(rec.updatedAt || nowIso),
                 updatedBy: currentUser.id
               };
+              if (colName === 'system_settings' && String(rec.id) === 'main') {
+                const liveSys = dbStateRef.current.system_settings.find((s) => s.id === 'main');
+                if (liveSys?.e2eeCloudWrappedKey && !payload.e2eeCloudWrappedKey) {
+                  payload.e2eeCloudWrappedKey = liveSys.e2eeCloudWrappedKey;
+                  payload.e2eeKeyFingerprint = liveSys.e2eeKeyFingerprint;
+                }
+              }
               if (vaultKeyRef.current && e2eeFingerprint) {
                 if (colName === 'patients') {
                   payload = await encryptRecordFields(payload, PATIENT_SENSITIVE_FIELDS, vaultKeyRef.current, e2eeFingerprint);

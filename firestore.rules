@@ -23,6 +23,10 @@ service cloud.firestore {
       return resource.data;
     }
 
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
     function isVerifiedAuth() {
       return request.auth != null && request.auth.token.email_verified == true;
     }
@@ -32,7 +36,7 @@ service cloud.firestore {
     }
 
     function hasUidProfile() {
-      return isVerifiedAuth() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
     }
 
     function hasEmailProfile() {
@@ -218,12 +222,12 @@ service cloud.firestore {
 
     // 1. Users (PII & E2EE wrapped keys strictly restricted to owner or Super Admin)
     match /users/{userId} {
-      allow get: if isValidId(userId) && (isSuperAdmin() || (isVerifiedAuth() && request.auth.uid == userId));
+      allow get: if isValidId(userId) && (isSuperAdmin() || (isSignedIn() && request.auth.uid == userId));
       allow list: if isSuperAdmin();
       allow create: if isValidId(userId) && isSuperAdmin() && isValidUserAccount(incoming());
       allow update: if isValidId(userId) && isValidUserAccount(incoming()) && immutableAuditFieldsUnchanged() && (
         isSuperAdmin() ||
-        (isVerifiedAuth() && request.auth.uid == userId &&
+        (isSignedIn() && request.auth.uid == userId &&
           incoming().role == existing().role &&
           incoming().active == existing().active &&
           incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'signatureUrl', 'e2eeSalt', 'e2eeWrappedKey', 'e2eeFingerprint', 'lastLoginAt', 'updatedAt', 'updatedBy']))

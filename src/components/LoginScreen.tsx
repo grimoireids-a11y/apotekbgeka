@@ -147,6 +147,46 @@ export const LoginScreen: React.FC = () => {
             </div>
           )}
 
+          <div className="space-y-2.5">
+            <button
+              type="button"
+              onClick={handleGoogleLogin}
+              disabled={googleLoading}
+              className="w-full h-11 rounded-lg bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white text-sm font-semibold transition-colors inline-flex items-center justify-center gap-2.5"
+            >
+              <span className="w-5 h-5 rounded-full bg-white flex items-center justify-center shrink-0">
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    fill="#4285F4"
+                    d="M23.745 12.27c0-.79-.07-1.54-.19-2.27h-11.3v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12.255 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96h-3.98v3.09C3.515 21.3 7.565 24 12.255 24z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.525 14.29c-.25-.72-.38-1.49-.38-2.29s.14-1.57.38-2.29V6.62h-3.98a11.86 11.86 0 000 10.76l3.98-3.09z"
+                  />
+                  <path
+                    fill="#EA4335"
+                    d="M12.255 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C18.205 1.19 15.495 0 12.255 0c-4.69 0-8.74 2.7-10.71 6.62l3.98 3.09c.95-2.85 3.6-4.96 6.73-4.96z"
+                  />
+                </svg>
+              </span>
+              {googleLoading ? 'Menarik Data Database Online...' : 'Masuk dengan Google (Firebase Real-Time)'}
+            </button>
+          </div>
+
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-slate-200" />
+            </div>
+            <div className="relative flex justify-center text-xs">
+              <span className="bg-white px-3 text-slate-500">atau masuk dengan username &amp; kata sandi</span>
+            </div>
+          </div>
+
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-1.5">
               <label htmlFor="login-username" className="block text-xs font-medium text-slate-700">
@@ -160,7 +200,7 @@ export const LoginScreen: React.FC = () => {
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="Contoh: superman"
-                className="w-full h-11 px-3.5 rounded-lg border border-slate-300 bg-white text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-600 focus:border-teal-600"
+                className="w-full h-10 px-3.5 rounded-lg border border-slate-300 bg-white text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-600 focus:border-teal-600"
               />
             </div>
 
@@ -177,7 +217,7 @@ export const LoginScreen: React.FC = () => {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Masukkan kata sandi"
-                  className="w-full h-11 px-3.5 pr-11 rounded-lg border border-slate-300 bg-white text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-600 focus:border-teal-600"
+                  className="w-full h-10 px-3.5 pr-11 rounded-lg border border-slate-300 bg-white text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-600 focus:border-teal-600"
                 />
                 <button
                   type="button"
@@ -193,53 +233,15 @@ export const LoginScreen: React.FC = () => {
             <button
               type="submit"
               disabled={submitting}
-              className="w-full h-11 rounded-lg bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white text-sm font-semibold transition-colors inline-flex items-center justify-center gap-2"
+              className="w-full h-10 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-60 text-slate-800 text-sm font-semibold transition-colors inline-flex items-center justify-center gap-2"
             >
-              <Lock className="w-4 h-4" />
-              {submitting ? 'Memverifikasi & Membuka Vault E2EE...' : 'Masuk ke Praktik'}
+              <Lock className="w-4 h-4 text-teal-700" />
+              {submitting ? 'Menghubungkan ke Firebase...' : 'Masuk dengan Username (Firebase Real-Time)'}
             </button>
-          </form>
-
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-slate-200" />
-            </div>
-            <div className="relative flex justify-center text-xs">
-              <span className="bg-white px-3 text-slate-500">atau autentikasi Cloud Firebase</span>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <button
-              type="button"
-              onClick={handleGoogleLogin}
-              disabled={googleLoading}
-              className="w-full h-11 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 text-sm font-medium transition-colors inline-flex items-center justify-center gap-2.5"
-            >
-              <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  fill="#4285F4"
-                  d="M23.745 12.27c0-.79-.07-1.54-.19-2.27h-11.3v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82z"
-                />
-                <path
-                  fill="#34A853"
-                  d="M12.255 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96h-3.98v3.09C3.515 21.3 7.565 24 12.255 24z"
-                />
-                <path
-                  fill="#FBBC05"
-                  d="M5.525 14.29c-.25-.72-.38-1.49-.38-2.29s.14-1.57.38-2.29V6.62h-3.98a11.86 11.86 0 000 10.76l3.98-3.09z"
-                />
-                <path
-                  fill="#EA4335"
-                  d="M12.255 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C18.205 1.19 15.495 0 12.255 0c-4.69 0-8.74 2.7-10.71 6.62l3.98 3.09c.95-2.85 3.6-4.96 6.73-4.96z"
-                />
-              </svg>
-              {googleLoading ? 'Menarik Data Database Online...' : 'Masuk dengan Google (Database Online Real-Time)'}
-            </button>
-            <p className="text-[11px] text-center text-slate-500">
-              Masuk dengan akun Google terdaftar untuk memuat &amp; menyinkronkan seluruh data Cloud Firestore secara otomatis.
+            <p className="text-[11px] text-slate-500 text-center">
+              Baik login Google maupun Username/Password terhubung langsung ke Cloud Firestore secara real-time di semua domain.
             </p>
-          </div>
+          </form>
         </div>
       </div>
     </div>
