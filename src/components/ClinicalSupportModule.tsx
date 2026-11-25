@@ -1,11 +1,13 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  Edit3,
   FlaskConical,
   Pill,
   Plus,
   Printer,
+  Search,
   Trash2,
   X
 } from 'lucide-react';
@@ -27,6 +29,23 @@ import {
   formatCurrencyIDR
 } from '../utils/obstetrics';
 
+const DOSAGE_FORM_OPTIONS = [
+  'Tablet',
+  'Kaplet',
+  'Kapsul',
+  'Kapsul Lunak',
+  'Sirup',
+  'Suspensi',
+  'Ovula',
+  'Injeksi',
+  'Krim / Salep',
+  'Gel',
+  'Suppositoria',
+  'Tetes',
+  'Sachet / Serbuk',
+  'Lainnya'
+];
+
 export const ClinicalSupportModule: React.FC = () => {
   const {
     activeView,
@@ -34,11 +53,15 @@ export const ClinicalSupportModule: React.FC = () => {
     currentUser,
     practice,
     upsertRecord,
+    deleteRecord,
     pushNotification,
     notifyToast,
     setPrintPayload,
     can
   } = usePractice();
+
+  const isSuperAdmin = currentUser?.role === 'SUPER_ADMIN';
+  const canManageMedicines = currentUser?.role === 'SUPER_ADMIN' || currentUser?.role === 'ASISTEN_DOKTER';
 
   // ==================== PROCEDURES STATE ====================
   const [procVisitId, setProcVisitId] = useState(dbState.visits[0]?.id || '');
@@ -55,10 +78,13 @@ export const ClinicalSupportModule: React.FC = () => {
   const [medQty, setMedQty] = useState(15);
   const [medDuration, setMedDuration] = useState('15 hari');
   const [medInstr, setMedInstr] = useState('Sesudah makan');
+  const [medSearch, setMedSearch] = useState('');
+  const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
 
-  // New Medicine Modal
+  // Add / Edit Medicine Modal
   const [medModalOpen, setMedModalOpen] = useState(false);
-  const [newMed, setNewMed] = useState({
+  const [editingMedId, setEditingMedId] = useState<string | null>(null);
+  const [medForm, setMedForm] = useState({
     code: '',
     name: '',
     genericName: '',
@@ -68,7 +94,8 @@ export const ClinicalSupportModule: React.FC = () => {
     unit: 'Tablet',
     price: 5000,
     stock: 100,
-    expiryDate: '2027-12-31'
+    expiryDate: '2027-12-31',
+    active: true
   });
 
   // ==================== LAB STATE ====================
@@ -77,6 +104,34 @@ export const ClinicalSupportModule: React.FC = () => {
   const [labNotes, setLabNotes] = useState('');
   const [resultModalOrder, setResultModalOrder] = useState<LaboratoryOrder | null>(null);
   const [resultDraft, setResultDraft] = useState<Record<string, { value: string; flag: LaboratoryResult['flag'] }>>({});
+
+  // Keep dropdown selections reactive when Firestore snapshots arrive asynchronously
+  useEffect(() => {
+    const firstVisitId = dbState.visits[0]?.id || '';
+    if ((!procVisitId || !dbState.visits.some((v) => v.id === procVisitId)) && firstVisitId) {
+      setProcVisitId(firstVisitId);
+    }
+    if ((!rxVisitId || !dbState.visits.some((v) => v.id === rxVisitId)) && firstVisitId) {
+      setRxVisitId(firstVisitId);
+    }
+    if ((!labVisitId || !dbState.visits.some((v) => v.id === labVisitId)) && firstVisitId) {
+      setLabVisitId(firstVisitId);
+    }
+  }, [dbState.visits, labVisitId, procVisitId, rxVisitId]);
+
+  useEffect(() => {
+    const activeServices = dbState.services.filter((s) => s.active);
+    if ((!procServiceId || !activeServices.some((s) => s.id === procServiceId)) && activeServices[0]?.id) {
+      setProcServiceId(activeServices[0].id);
+    }
+  }, [dbState.services, procServiceId]);
+
+  useEffect(() => {
+    const activeMeds = dbState.medicines.filter((m) => m.active);
+    if ((!selMedId || !activeMeds.some((m) => m.id === selMedId)) && activeMeds[0]?.id) {
+      setSelMedId(activeMeds[0].id);
+    }
+  }, [dbState.medicines, selMedId]);
 
   // Helper to append billable line item to visit invoice automatically
   const addItemToVisitInvoice = async (
@@ -323,32 +378,107 @@ export const ClinicalSupportModule: React.FC = () => {
       notifyToast(`Obat pada resep ${rx.rxNumber} diserahkan & stok diperbarui.`, 'success');
     };
 
-    const handleSaveNewMed = async (e: React.FormEvent) => {
+    const openAddMedModal = () => {
+      setEditingMedId(null);
+      setMedForm({
+        code: `OBT-${String(dbState.medicines.length + 1).padStart(3, '0')}`,
+        name: '',
+        genericName: '',
+        brand: '',
+        dosageForm: 'Tablet',
+        strength: '500 mg',
+        unit: 'Tablet',
+        price: 5000,
+        stock: 100,
+        expiryDate: '2027-12-31',
+        active: true
+      });
+      setMedModalOpen(true);
+    };
+
+    const openEditMedModal = (med: Medicine) => {
+      setEditingMedId(med.id);
+      setMedForm({
+        code: med.code,
+        name: med.name,
+        genericName: med.genericName,
+        brand: med.brand,
+        dosageForm: med.dosageForm || 'Tablet',
+        strength: med.strength || '',
+        unit: med.unit || 'Tablet',
+        price: med.price,
+        stock: med.stock,
+        expiryDate: med.expiryDate || '2027-12-31',
+        active: med.active
+      });
+      setMedModalOpen(true);
+    };
+
+    const handleSaveMed = async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!newMed.name.trim() || !currentUser) return;
+      if (!medForm.name.trim() || !currentUser) {
+        notifyToast('Nama obat wajib diisi.', 'error');
+        return;
+      }
       const nowIso = new Date().toISOString();
+      const existing = editingMedId ? dbState.medicines.find((m) => m.id === editingMedId) : null;
       const rec: Medicine = {
-        id: `med-${Date.now()}`,
-        code: newMed.code.trim() || `OBT-${dbState.medicines.length + 1}`,
-        name: newMed.name.trim(),
-        genericName: newMed.genericName.trim() || newMed.name.trim(),
-        brand: newMed.brand.trim() || 'Generik',
-        dosageForm: newMed.dosageForm,
-        strength: newMed.strength,
-        unit: newMed.unit,
-        price: Number(newMed.price) || 0,
-        stock: Number(newMed.stock) || 0,
-        expiryDate: newMed.expiryDate,
-        active: true,
-        createdAt: nowIso,
-        createdBy: currentUser.id,
+        id: existing?.id || `med-${Date.now()}`,
+        code: medForm.code.trim().toUpperCase() || `OBT-${String(dbState.medicines.length + 1).padStart(3, '0')}`,
+        name: medForm.name.trim(),
+        genericName: medForm.genericName.trim() || medForm.name.trim(),
+        brand: medForm.brand.trim() || 'Generik',
+        dosageForm: medForm.dosageForm.trim() || 'Tablet',
+        strength: medForm.strength.trim() || '-',
+        unit: medForm.unit.trim() || medForm.dosageForm.trim() || 'Tablet',
+        price: Math.max(0, Number(medForm.price) || 0),
+        stock: Math.max(0, Number(medForm.stock) || 0),
+        expiryDate: medForm.expiryDate || '2027-12-31',
+        active: medForm.active,
+        createdAt: existing?.createdAt || nowIso,
+        createdBy: existing?.createdBy || currentUser.id,
         updatedAt: nowIso,
         updatedBy: currentUser.id
       };
       await upsertRecord('medicines', rec);
+      setSelMedId(rec.id);
       setMedModalOpen(false);
-      notifyToast(`Obat "${rec.name}" ditambahkan ke katalog.`, 'success');
+      setEditingMedId(null);
+      notifyToast(
+        existing
+          ? `Jenis & data obat "${rec.name}" berhasil diperbarui.`
+          : `Jenis obat "${rec.name}" ditambahkan ke katalog dan tersimpan online.`,
+        'success'
+      );
     };
+
+    const handleDeleteMed = async (med: Medicine) => {
+      if (!isSuperAdmin) return;
+      await deleteRecord('medicines', med.id);
+      setConfirmDeleteKey(null);
+      notifyToast(`Obat "${med.name}" dihapus permanen dari katalog.`, 'info');
+    };
+
+    const handleDeleteRx = async (rx: Prescription) => {
+      if (!isSuperAdmin) return;
+      await deleteRecord('prescriptions', rx.id);
+      setConfirmDeleteKey(null);
+      notifyToast(`Resep ${rx.rxNumber} berhasil dihapus.`, 'info');
+    };
+
+    const filteredMedicines = dbState.medicines.filter((m) => {
+      const q = medSearch.trim().toLowerCase();
+      if (!q) return true;
+      return (
+        m.code.toLowerCase().includes(q) ||
+        m.name.toLowerCase().includes(q) ||
+        m.genericName.toLowerCase().includes(q) ||
+        m.dosageForm.toLowerCase().includes(q) ||
+        m.brand.toLowerCase().includes(q)
+      );
+    });
+
+    const selectedMedObj = dbState.medicines.find((m) => m.id === selMedId);
 
     return (
       <div className="space-y-6">
@@ -356,16 +486,28 @@ export const ClinicalSupportModule: React.FC = () => {
           <div>
             <h1 className="text-xl font-bold text-slate-900">Resep Elektronik &amp; Katalog Obat</h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Pemeriksaan interaksi obat &amp; alergi pasien otomatis · Pengesahan resep oleh Dokter · Penyerahan obat oleh Asisten.
+              Pemeriksaan interaksi obat &amp; alergi pasien otomatis · Pengesahan resep oleh Dokter · Kelola jenis &amp; stok obat real-time.
             </p>
           </div>
-          <div className="flex items-center gap-1 p-1 bg-slate-200/70 rounded-lg">
-            <button type="button" onClick={() => setRxTab('resep')} className={`px-3 py-1.5 text-xs font-semibold rounded-md ${rxTab === 'resep' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'}`}>
-              Resep Dokter
-            </button>
-            <button type="button" onClick={() => setRxTab('katalog')} className={`px-3 py-1.5 text-xs font-semibold rounded-md ${rxTab === 'katalog' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'}`}>
-              Katalog &amp; Stok Obat ({dbState.medicines.length})
-            </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {canManageMedicines && (
+              <button
+                type="button"
+                onClick={openAddMedModal}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 whitespace-nowrap"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Tambah Jenis Obat
+              </button>
+            )}
+            <div className="flex items-center gap-1 p-1 bg-slate-200/70 rounded-lg">
+              <button type="button" onClick={() => setRxTab('resep')} className={`px-3 py-1.5 text-xs font-semibold rounded-md ${rxTab === 'resep' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'}`}>
+                Resep Dokter
+              </button>
+              <button type="button" onClick={() => setRxTab('katalog')} className={`px-3 py-1.5 text-xs font-semibold rounded-md ${rxTab === 'katalog' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'}`}>
+                Katalog &amp; Jenis Obat ({dbState.medicines.length})
+              </button>
+            </div>
           </div>
         </div>
 
@@ -373,7 +515,19 @@ export const ClinicalSupportModule: React.FC = () => {
           <div className="space-y-6">
             {can('prescriptions.write') && (
               <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 text-xs">
-                <h2 className="text-sm font-bold text-slate-900">Buat Resep Baru (Kewenangan Dokter Sp.OG)</h2>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-sm font-bold text-slate-900">Buat Resep Baru (Kewenangan Dokter Sp.OG / Super Admin)</h2>
+                  {isSuperAdmin && selectedMedObj && (
+                    <button
+                      type="button"
+                      onClick={() => openEditMedModal(selectedMedObj)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-slate-200 bg-slate-50 text-teal-800 font-semibold hover:bg-teal-50"
+                    >
+                      <Edit3 className="w-3 h-3" />
+                      Edit Obat Terpilih ({selectedMedObj.dosageForm})
+                    </button>
+                  )}
+                </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block font-medium text-slate-700 mb-1">Pilih Kunjungan Pasien</label>
@@ -392,14 +546,20 @@ export const ClinicalSupportModule: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-6 gap-2.5 items-end">
+                <div className="grid grid-cols-2 sm:grid-cols-7 gap-2.5 items-end">
                   <div className="col-span-2">
-                    <label className="block text-slate-600 mb-1">Obat</label>
+                    <label className="block text-slate-600 mb-1">Obat &amp; Jenis Sediaan</label>
                     <select value={selMedId} onChange={(e) => setSelMedId(e.target.value)} className="w-full h-9 px-2.5 rounded-lg border border-slate-300 bg-white">
                       {dbState.medicines.filter((m) => m.active).map((m) => (
-                        <option key={m.id} value={m.id}>{m.name} (Stok {m.stock})</option>
+                        <option key={m.id} value={m.id}>
+                          {m.name} — {m.dosageForm} {m.strength} (Stok {m.stock})
+                        </option>
                       ))}
                     </select>
+                  </div>
+                  <div>
+                    <label className="block text-slate-600 mb-1">Dosis</label>
+                    <input value={medDosage} onChange={(e) => setMedDosage(e.target.value)} className="w-full h-9 px-2.5 rounded-lg border border-slate-300" />
                   </div>
                   <div>
                     <label className="block text-slate-600 mb-1">Frekuensi</label>
@@ -434,7 +594,7 @@ export const ClinicalSupportModule: React.FC = () => {
                     {rxItems.map((it, idx) => (
                       <div key={idx} className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200">
                         <div>
-                          <span className="font-semibold text-slate-900">{it.medicineName}</span> · {it.frequency} · #{it.quantity} {it.unit} ({it.instructions})
+                          <span className="font-semibold text-slate-900">{it.medicineName}</span> · {it.dosage} · {it.frequency} · #{it.quantity} {it.unit} ({it.instructions})
                         </div>
                         <button type="button" onClick={() => setRxItems((p) => p.filter((_, i) => i !== idx))} aria-label="Hapus item resep" className="text-slate-400 hover:text-red-700">
                           <Trash2 className="w-3.5 h-3.5" />
@@ -468,7 +628,7 @@ export const ClinicalSupportModule: React.FC = () => {
                       </p>
                       <p className="text-slate-400">Dokter: {rx.doctorName} · Status: <strong className="text-slate-800">{rx.status}</strong></p>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
                       {can('prescriptions.dispense') && rx.status === 'Disahkan Dokter' && (
                         <button
                           type="button"
@@ -494,6 +654,34 @@ export const ClinicalSupportModule: React.FC = () => {
                         <Printer className="w-3.5 h-3.5" />
                         Cetak
                       </button>
+                      {isSuperAdmin &&
+                        (confirmDeleteKey === `rx:${rx.id}` ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteRx(rx)}
+                              className="px-2.5 py-1.5 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700"
+                            >
+                              Ya, Hapus
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteKey(null)}
+                              className="px-2 py-1.5 text-slate-600"
+                            >
+                              Batal
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteKey(`rx:${rx.id}`)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-200 text-red-700 font-semibold hover:bg-red-50"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Hapus
+                          </button>
+                        ))}
                     </div>
                   </div>
                 ))}
@@ -508,14 +696,28 @@ export const ClinicalSupportModule: React.FC = () => {
           </div>
         ) : (
           <div className="space-y-4">
-            {currentUser?.role !== 'DOKTER_SPOG' && (
-              <div className="flex justify-end">
-                <button type="button" onClick={() => setMedModalOpen(true)} className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800">
-                  <Plus className="w-4 h-4" />
-                  Tambah Obat ke Katalog
-                </button>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="search"
+                  value={medSearch}
+                  onChange={(e) => setMedSearch(e.target.value)}
+                  placeholder="Cari kode, nama obat, generik, atau jenis sediaan..."
+                  className="pl-8 pr-3 py-2 text-xs bg-white border border-slate-200 rounded-lg w-72"
+                />
               </div>
-            )}
+              {canManageMedicines && (
+                <button
+                  type="button"
+                  onClick={openAddMedModal}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 whitespace-nowrap"
+                >
+                  <Plus className="w-4 h-4" />
+                  Tambah Obat / Jenis Baru
+                </button>
+              )}
+            </div>
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
@@ -523,56 +725,192 @@ export const ClinicalSupportModule: React.FC = () => {
                     <tr className="bg-slate-50 border-b border-slate-200 text-slate-600">
                       <th className="px-4 py-3 text-left font-semibold">Kode</th>
                       <th className="px-4 py-3 text-left font-semibold">Nama Obat &amp; Generik</th>
-                      <th className="px-4 py-3 text-left font-semibold">Sediaan &amp; Kekuatan</th>
+                      <th className="px-4 py-3 text-left font-semibold">Jenis Sediaan &amp; Kekuatan</th>
                       <th className="px-4 py-3 text-right font-semibold">Harga</th>
                       <th className="px-4 py-3 text-right font-semibold">Stok</th>
                       <th className="px-4 py-3 text-left font-semibold">Kedaluwarsa</th>
+                      <th className="px-4 py-3 text-left font-semibold">Status</th>
+                      {canManageMedicines && <th className="px-4 py-3 text-right font-semibold">Aksi</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {dbState.medicines.map((m) => (
-                      <tr key={m.id}>
-                        <td className="px-4 py-2.5 font-mono text-teal-800">{m.code}</td>
+                    {filteredMedicines.map((m) => (
+                      <tr key={m.id} className={!m.active ? 'opacity-60 bg-slate-50/50' : ''}>
+                        <td className="px-4 py-2.5 font-mono text-teal-800 font-semibold">{m.code}</td>
                         <td className="px-4 py-2.5">
                           <p className="font-semibold text-slate-900">{m.name}</p>
                           <p className="text-slate-500">{m.genericName} · {m.brand}</p>
                         </td>
-                        <td className="px-4 py-2.5 text-slate-700">{m.dosageForm} {m.strength}</td>
+                        <td className="px-4 py-2.5 text-slate-700">
+                          <span className="font-semibold text-slate-900">{m.dosageForm}</span> · {m.strength}
+                        </td>
                         <td className="px-4 py-2.5 text-right font-mono tabular-nums">{formatCurrencyIDR(m.price)}</td>
                         <td className={`px-4 py-2.5 text-right font-mono font-bold tabular-nums ${m.stock < 20 ? 'text-red-700' : 'text-slate-900'}`}>
                           {m.stock} {m.unit}
                         </td>
                         <td className="px-4 py-2.5 font-mono text-slate-600">{m.expiryDate}</td>
+                        <td className="px-4 py-2.5">
+                          <span className={m.active ? 'text-emerald-700 font-semibold' : 'text-slate-500'}>
+                            {m.active ? 'Aktif' : 'Nonaktif'}
+                          </span>
+                        </td>
+                        {canManageMedicines && (
+                          <td className="px-4 py-2.5 text-right whitespace-nowrap space-x-2.5">
+                            {confirmDeleteKey === `med:${m.id}` ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleDeleteMed(m)}
+                                  className="px-2 py-1 rounded bg-red-600 text-white font-semibold"
+                                >
+                                  Ya, Hapus
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteKey(null)}
+                                  className="text-slate-500"
+                                >
+                                  Batal
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => openEditMedModal(m)}
+                                  className="inline-flex items-center gap-1 text-teal-700 hover:text-teal-900 font-semibold"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5" />
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void upsertRecord('medicines', { ...m, active: !m.active })}
+                                  className="text-slate-600 hover:text-slate-900 font-semibold"
+                                >
+                                  {m.active ? 'Nonaktifkan' : 'Aktifkan'}
+                                </button>
+                                {isSuperAdmin && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteKey(`med:${m.id}`)}
+                                    className="inline-flex items-center gap-1 text-red-600 hover:text-red-800 font-semibold"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                    Hapus
+                                  </button>
+                                )}
+                              </>
+                            )}
+                          </td>
+                        )}
                       </tr>
                     ))}
+                    {filteredMedicines.length === 0 && (
+                      <tr>
+                        <td colSpan={canManageMedicines ? 8 : 7} className="py-8 text-center text-slate-400">
+                          Tidak ada obat yang cocok dengan pencarian.
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
             </div>
+          </div>
+        )}
 
-            {medModalOpen && (
-              <div className="fixed inset-0 z-50 bg-slate-900/45 flex items-center justify-center p-4" role="dialog" aria-modal="true">
-                <div className="bg-white border border-slate-200 rounded-xl max-w-lg w-full p-6 space-y-4 text-xs">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-base font-bold text-slate-900">Tambah Obat Baru</h3>
-                    <button type="button" onClick={() => setMedModalOpen(false)} aria-label="Tutup modal obat"><X className="w-4 h-4" /></button>
-                  </div>
-                  <form onSubmit={handleSaveNewMed} className="grid grid-cols-2 gap-3">
-                    <div><label className="block text-slate-600 mb-1">Kode</label><input value={newMed.code} onChange={(e) => setNewMed({ ...newMed, code: e.target.value })} placeholder="OBT-011" className="w-full h-9 px-2.5 rounded-lg border border-slate-300 font-mono" /></div>
-                    <div><label className="block text-slate-600 mb-1">Nama Obat *</label><input required value={newMed.name} onChange={(e) => setNewMed({ ...newMed, name: e.target.value })} className="w-full h-9 px-2.5 rounded-lg border border-slate-300" /></div>
-                    <div><label className="block text-slate-600 mb-1">Nama Generik</label><input value={newMed.genericName} onChange={(e) => setNewMed({ ...newMed, genericName: e.target.value })} className="w-full h-9 px-2.5 rounded-lg border border-slate-300" /></div>
-                    <div><label className="block text-slate-600 mb-1">Merek</label><input value={newMed.brand} onChange={(e) => setNewMed({ ...newMed, brand: e.target.value })} className="w-full h-9 px-2.5 rounded-lg border border-slate-300" /></div>
-                    <div><label className="block text-slate-600 mb-1">Harga (Rp)</label><input type="number" value={newMed.price} onChange={(e) => setNewMed({ ...newMed, price: Number(e.target.value) })} className="w-full h-9 px-2.5 rounded-lg border border-slate-300 font-mono" /></div>
-                    <div><label className="block text-slate-600 mb-1">Stok Awal</label><input type="number" value={newMed.stock} onChange={(e) => setNewMed({ ...newMed, stock: Number(e.target.value) })} className="w-full h-9 px-2.5 rounded-lg border border-slate-300 font-mono" /></div>
-                    <div className="col-span-2"><label className="block text-slate-600 mb-1">Batas Kedaluwarsa</label><input type="date" value={newMed.expiryDate} onChange={(e) => setNewMed({ ...newMed, expiryDate: e.target.value })} className="w-full h-9 px-2.5 rounded-lg border border-slate-300 font-mono" /></div>
-                    <div className="col-span-2 flex justify-end gap-2 pt-2">
-                      <button type="button" onClick={() => setMedModalOpen(false)} className="px-4 py-2 rounded-lg border border-slate-300 font-semibold">Batal</button>
-                      <button type="submit" className="px-4 py-2 rounded-lg bg-teal-700 text-white font-semibold hover:bg-teal-800">Simpan Obat</button>
-                    </div>
-                  </form>
+        {/* Shared Add / Edit Medicine Modal (accessible from both Resep Dokter & Katalog tabs) */}
+        {medModalOpen && (
+          <div className="fixed inset-0 z-50 bg-slate-900/45 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+            <div className="bg-white border border-slate-200 rounded-xl max-w-xl w-full p-6 space-y-4 text-xs shadow-xl">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    {editingMedId ? 'Edit Jenis & Data Obat' : 'Tambah Obat / Jenis Obat Baru'}
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Perubahan langsung tersimpan ke database online dan tersedia di seluruh form resep.
+                  </p>
                 </div>
+                <button type="button" onClick={() => setMedModalOpen(false)} aria-label="Tutup modal obat" className="p-1 text-slate-500 hover:text-slate-900">
+                  <X className="w-4 h-4" />
+                </button>
               </div>
-            )}
+              <form onSubmit={handleSaveMed} className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Kode Obat *</label>
+                  <input required value={medForm.code} onChange={(e) => setMedForm({ ...medForm, code: e.target.value })} placeholder="OBT-011" className="w-full h-9 px-2.5 rounded-lg border border-slate-300 font-mono" />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Nama Obat *</label>
+                  <input required value={medForm.name} onChange={(e) => setMedForm({ ...medForm, name: e.target.value })} placeholder="Contoh: Utrogestan 200 mg" className="w-full h-9 px-2.5 rounded-lg border border-slate-300" />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Nama Generik / Kandungan</label>
+                  <input value={medForm.genericName} onChange={(e) => setMedForm({ ...medForm, genericName: e.target.value })} placeholder="Micronized Progesterone" className="w-full h-9 px-2.5 rounded-lg border border-slate-300" />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Merek / Pabrikan</label>
+                  <input value={medForm.brand} onChange={(e) => setMedForm({ ...medForm, brand: e.target.value })} placeholder="Generik / Besins" className="w-full h-9 px-2.5 rounded-lg border border-slate-300" />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Jenis / Bentuk Sediaan *</label>
+                  <input
+                    list="dosage-form-list"
+                    required
+                    value={medForm.dosageForm}
+                    onChange={(e) => setMedForm({ ...medForm, dosageForm: e.target.value })}
+                    placeholder="Tablet, Kapsul, Sirup, Ovula, Injeksi..."
+                    className="w-full h-9 px-2.5 rounded-lg border border-slate-300 bg-white"
+                  />
+                  <datalist id="dosage-form-list">
+                    {DOSAGE_FORM_OPTIONS.map((opt) => (
+                      <option key={opt} value={opt} />
+                    ))}
+                  </datalist>
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Kekuatan / Dosis Sediaan</label>
+                  <input value={medForm.strength} onChange={(e) => setMedForm({ ...medForm, strength: e.target.value })} placeholder="500 mg / 200 mg / 5 ml" className="w-full h-9 px-2.5 rounded-lg border border-slate-300" />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Satuan Penyerahan</label>
+                  <input value={medForm.unit} onChange={(e) => setMedForm({ ...medForm, unit: e.target.value })} placeholder="Tablet / Kapsul / Botol / Strip" className="w-full h-9 px-2.5 rounded-lg border border-slate-300" />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Harga Satuan (Rp)</label>
+                  <input type="number" min={0} value={medForm.price} onChange={(e) => setMedForm({ ...medForm, price: Number(e.target.value) })} className="w-full h-9 px-2.5 rounded-lg border border-slate-300 font-mono tabular-nums" />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Stok Tersedia</label>
+                  <input type="number" min={0} value={medForm.stock} onChange={(e) => setMedForm({ ...medForm, stock: Number(e.target.value) })} className="w-full h-9 px-2.5 rounded-lg border border-slate-300 font-mono tabular-nums" />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Batas Kedaluwarsa</label>
+                  <input type="date" value={medForm.expiryDate} onChange={(e) => setMedForm({ ...medForm, expiryDate: e.target.value })} className="w-full h-9 px-2.5 rounded-lg border border-slate-300 font-mono" />
+                </div>
+                <div className="sm:col-span-2 pt-1">
+                  <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={medForm.active}
+                      onChange={(e) => setMedForm({ ...medForm, active: e.target.checked })}
+                      className="w-4 h-4 accent-teal-700"
+                    />
+                    Aktif (tampilkan di daftar pilihan resep dokter)
+                  </label>
+                </div>
+                <div className="sm:col-span-2 flex justify-end gap-2 pt-3 border-t border-slate-100">
+                  <button type="button" onClick={() => setMedModalOpen(false)} className="px-4 py-2 rounded-lg border border-slate-300 font-semibold text-slate-700 hover:bg-slate-50">
+                    Batal
+                  </button>
+                  <button type="submit" className="px-4 py-2 rounded-lg bg-teal-700 text-white font-semibold hover:bg-teal-800">
+                    {editingMedId ? 'Simpan Perubahan Obat' : 'Simpan Obat Baru'}
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
         )}
       </div>

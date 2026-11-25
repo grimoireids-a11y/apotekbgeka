@@ -202,7 +202,10 @@ export async function decryptRecordFields<T extends Record<string, unknown>>(
       try {
         clone[field] = await decryptTextE2EE(envelope, vaultKey);
       } catch {
-        clone[field] = '[Terenkripsi — Kunci Tidak Cocok]';
+        const currentVal = clone[field];
+        if (typeof currentVal !== 'string' || currentVal.startsWith('E2EE::')) {
+          clone[field] = '[Terenkripsi — Kunci Tidak Cocok]';
+        }
       }
     }
   }

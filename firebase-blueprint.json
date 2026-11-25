@@ -12,6 +12,7 @@
         "role": { "type": "string", "enum": ["SUPER_ADMIN", "DOKTER_SPOG", "ASISTEN_DOKTER"] },
         "strNumber": { "type": "string", "maxLength": 80 },
         "sipNumber": { "type": "string", "maxLength": 80 },
+        "signatureUrl": { "type": "string", "maxLength": 350000 },
         "active": { "type": "boolean" },
         "e2eeSalt": { "type": "string", "maxLength": 128 },
         "e2eeWrappedKey": { "type": "string", "maxLength": 1024 },
@@ -39,6 +40,7 @@
         "role": { "type": "string", "enum": ["SUPER_ADMIN", "DOKTER_SPOG", "ASISTEN_DOKTER"] },
         "strNumber": { "type": "string", "maxLength": 80 },
         "sipNumber": { "type": "string", "maxLength": 80 },
+        "signatureUrl": { "type": "string", "maxLength": 350000 },
         "active": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
         "createdBy": { "type": "string", "maxLength": 128 },
@@ -94,7 +96,8 @@
         "address": { "type": "string", "maxLength": 500 },
         "phone": { "type": "string", "maxLength": 40 },
         "email": { "type": "string", "maxLength": 160 },
-        "logoUrl": { "type": "string", "maxLength": 2000 },
+        "logoUrl": { "type": "string", "maxLength": 350000 },
+        "doctorSignatureUrl": { "type": "string", "maxLength": 350000 },
         "operationalHours": { "type": "string", "maxLength": 300 },
         "rmFormat": { "type": "string", "maxLength": 40 },
         "visitFormat": { "type": "string", "maxLength": 40 },
@@ -595,6 +598,7 @@
       "type": "object",
       "properties": {
         "id": { "type": "string", "maxLength": 64 },
+        "e2eeCloudWrappedKey": { "type": "string", "maxLength": 2048 },
         "updatedAt": { "type": "string" },
         "updatedBy": { "type": "string" }
       },

@@ -61,6 +61,7 @@ export interface UserAccount extends AuditFields {
   role: RoleCode;
   strNumber?: string;
   sipNumber?: string;
+  signatureUrl?: string;
   active: boolean;
   e2eeSalt?: string;
   e2eeWrappedKey?: string;
@@ -93,6 +94,7 @@ export interface PracticeSettings extends AuditFields {
   phone: string;
   email: string;
   logoUrl: string;
+  doctorSignatureUrl?: string;
   operationalHours: string;
   rmFormat: string;
   visitFormat: string;
@@ -662,6 +664,7 @@ export interface SystemSettings extends AuditFields {
   e2eeRequired: boolean;
   e2eeKeyVersion: number;
   e2eeKeyFingerprint: string;
+  e2eeCloudWrappedKey?: string;
   scheduleSlots: PracticeScheduleSlot[];
   templates: DocumentTemplates;
 }

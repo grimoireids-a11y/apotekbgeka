@@ -28,7 +28,7 @@ service cloud.firestore {
     }
 
     function isBootstrappedSuperAdmin() {
-      return isVerifiedAuth() && request.auth.token.email == 'grimoireids@gmail.com';
+      return isVerifiedAuth() && request.auth.token.email is string && request.auth.token.email.lower() == 'grimoireids@gmail.com';
     }
 
     function hasUidProfile() {
@@ -94,7 +94,7 @@ service cloud.firestore {
     function isValidUserAccount(data) {
       return data.keys().hasAll(['id', 'displayName', 'role', 'active', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']) &&
         data.keys().hasOnly([
-          'id', 'username', 'displayName', 'email', 'role', 'strNumber', 'sipNumber',
+          'id', 'username', 'displayName', 'email', 'role', 'strNumber', 'sipNumber', 'signatureUrl',
           'active', 'e2eeSalt', 'e2eeWrappedKey', 'e2eeFingerprint', 'e2eePublicKey',
           'lastLoginAt', 'isDemo',
           'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
@@ -109,7 +109,7 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'userId', 'email', 'displayName', 'role', 'active', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']) &&
         data.keys().hasOnly([
           'id', 'userId', 'email', 'username', 'displayName', 'role',
-          'strNumber', 'sipNumber', 'active',
+          'strNumber', 'sipNumber', 'signatureUrl', 'active',
           'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
         ]) &&
         isValidAuditMetadata(data) &&
@@ -226,7 +226,7 @@ service cloud.firestore {
         (isVerifiedAuth() && request.auth.uid == userId &&
           incoming().role == existing().role &&
           incoming().active == existing().active &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'e2eeSalt', 'e2eeWrappedKey', 'e2eeFingerprint', 'lastLoginAt', 'updatedAt', 'updatedBy']))
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'signatureUrl', 'e2eeSalt', 'e2eeWrappedKey', 'e2eeFingerprint', 'lastLoginAt', 'updatedAt', 'updatedBy']))
       );
       allow delete: if isValidId(userId) && isSuperAdmin() && request.auth.uid != userId;
     }
@@ -426,7 +426,7 @@ service cloud.firestore {
       allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(invoiceId) && isStaffActive() && isValidInvoice(incoming());
       allow update: if isValidId(invoiceId) && isValidInvoice(incoming()) && immutableAuditFieldsUnchanged() && isCashierAuthorized();
-      allow delete: if isValidId(invoiceId) && isSuperAdmin() && existing().isDemo == true;
+      allow delete: if isValidId(invoiceId) && isSuperAdmin();
     }
 
     match /invoice_items/{itemId} {
@@ -434,7 +434,7 @@ service cloud.firestore {
       allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(itemId) && isStaffActive() && isValidGenericEntity(incoming());
       allow update: if isValidId(itemId) && isCashierAuthorized() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
-      allow delete: if isValidId(itemId) && isSuperAdmin() && existing().isDemo == true;
+      allow delete: if isValidId(itemId) && isSuperAdmin();
     }
 
     match /payments/{paymentId} {
@@ -446,7 +446,7 @@ service cloud.firestore {
         (isAssistant() && existing().status == 'Sukses' &&
           incoming().diff(existing()).affectedKeys().hasOnly(['status', 'cancelReason', 'updatedAt', 'updatedBy']))
       );
-      allow delete: if isValidId(paymentId) && isSuperAdmin() && existing().isDemo == true;
+      allow delete: if isValidId(paymentId) && isSuperAdmin();
     }
 
     match /refunds/{refundId} {
@@ -454,7 +454,7 @@ service cloud.firestore {
       allow list: if isCashierAuthorized() && request.query.limit <= 500;
       allow create: if isValidId(refundId) && isCashierAuthorized() && isValidGenericEntity(incoming()) && (isSuperAdmin() || incoming().status == 'Menunggu Persetujuan');
       allow update: if isValidId(refundId) && isSuperAdmin() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
-      allow delete: if isValidId(refundId) && isSuperAdmin() && existing().isDemo == true;
+      allow delete: if isValidId(refundId) && isSuperAdmin();
     }
 
     match /cash_sessions/{sessionId} {
@@ -462,7 +462,7 @@ service cloud.firestore {
       allow list: if isCashierAuthorized() && request.query.limit <= 500;
       allow create: if isValidId(sessionId) && isCashierAuthorized() && isValidGenericEntity(incoming());
       allow update: if isValidId(sessionId) && isCashierAuthorized() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
-      allow delete: if isValidId(sessionId) && isSuperAdmin() && existing().isDemo == true;
+      allow delete: if isValidId(sessionId) && isSuperAdmin();
     }
 
     match /cash_transactions/{txId} {
@@ -470,7 +470,7 @@ service cloud.firestore {
       allow list: if isCashierAuthorized() && request.query.limit <= 1000;
       allow create: if isValidId(txId) && isCashierAuthorized() && isValidGenericEntity(incoming());
       allow update: if isValidId(txId) && isSuperAdmin() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
-      allow delete: if isValidId(txId) && isSuperAdmin() && existing().isDemo == true;
+      allow delete: if isValidId(txId) && isSuperAdmin();
     }
 
     match /expenses/{expenseId} {

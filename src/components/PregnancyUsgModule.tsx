@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   CartesianGrid,
   Line,
@@ -40,6 +40,13 @@ export const PregnancyUsgModule: React.FC = () => {
 
   // Pregnancy state
   const [selectedPregnancyId, setSelectedPregnancyId] = useState<string>(dbState.pregnancies[0]?.id || '');
+
+  useEffect(() => {
+    if (dbState.pregnancies.length === 0) return;
+    if (!selectedPregnancyId || !dbState.pregnancies.some((p) => p.id === selectedPregnancyId)) {
+      setSelectedPregnancyId(dbState.pregnancies[0].id);
+    }
+  }, [dbState.pregnancies, selectedPregnancyId]);
   const [pregModalOpen, setPregModalOpen] = useState(false);
   const [ancModalOpen, setAncModalOpen] = useState(false);
   const [pregForm, setPregForm] = useState({

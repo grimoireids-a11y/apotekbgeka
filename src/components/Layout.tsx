@@ -24,6 +24,7 @@ import {
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
+  PenTool,
   Pill,
   Receipt,
   ScanLine,
@@ -40,6 +41,7 @@ import { usePractice } from '../context/PracticeContext';
 import type { NavView } from '../types/models';
 import { ROLE_LABELS, SIDEBAR_MENU } from '../utils/rbac';
 import { DEFAULT_LOGO_PATH } from '../data/defaults';
+import { SignatureInput } from './SignatureInput';
 
 const VIEW_ICONS: Record<NavView, React.ComponentType<{ className?: string }>> = {
   dashboard: LayoutDashboard,
@@ -96,7 +98,8 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     logout,
     toasts,
     dismissToast,
-    upsertRecord
+    upsertRecord,
+    updateMySignature
   } = usePractice();
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -104,7 +107,15 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   const [quickSearch, setQuickSearch] = useState('');
   const [notifOpen, setNotifOpen] = useState(false);
   const [e2eeModalOpen, setE2eeModalOpen] = useState(false);
+  const [sigModalOpen, setSigModalOpen] = useState(false);
+  const [mySigDraft, setMySigDraft] = useState('');
+  const [savingMySig, setSavingMySig] = useState(false);
   const [logoBroken, setLogoBroken] = useState(false);
+
+  const openMySignatureModal = () => {
+    setMySigDraft(currentUser?.signatureUrl || '');
+    setSigModalOpen(true);
+  };
 
   const visibleMenu = useMemo(() => {
     if (!currentUser) return [];
@@ -236,15 +247,26 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                 {ROLE_LABELS[currentUser.role]}
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => void logout()}
-              aria-label="Keluar dari sistem"
-              title="Keluar"
-              className="p-2 rounded-lg text-slate-500 hover:text-red-700 hover:bg-red-50 transition-colors shrink-0"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={openMySignatureModal}
+                aria-label="Atur tanda tangan digital saya"
+                title="Tanda Tangan Saya"
+                className="p-2 rounded-lg text-slate-500 hover:text-teal-700 hover:bg-teal-50 transition-colors"
+              >
+                <PenTool className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => void logout()}
+                aria-label="Keluar dari sistem"
+                title="Keluar"
+                className="p-2 rounded-lg text-slate-500 hover:text-red-700 hover:bg-red-50 transition-colors"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -344,8 +366,16 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             )}
           </div>
 
-          {/* Zone 3: E2EE Vault Button + Notifications */}
+          {/* Zone 3: Personal Signature + E2EE Vault Button + Notifications */}
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={openMySignatureModal}
+              className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap"
+            >
+              <PenTool className="w-3.5 h-3.5 text-teal-700" />
+              <span>{currentUser?.signatureUrl ? 'TTD Saya' : 'Atur TTD'}</span>
+            </button>
             <button
               type="button"
               onClick={() => setE2eeModalOpen(true)}
@@ -498,6 +528,71 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                 className="px-4 py-2 text-xs font-semibold rounded-lg bg-teal-700 text-white hover:bg-teal-800"
               >
                 Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Personal Digital Signature Modal */}
+      {sigModalOpen && currentUser && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/45 flex items-center justify-center p-4 no-print"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Atur Tanda Tangan Digital Saya"
+        >
+          <div className="bg-white border border-slate-200 rounded-xl max-w-lg w-full p-6 space-y-5 shadow-xl">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <PenTool className="w-5 h-5 text-teal-700" />
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">Tanda Tangan Digital Saya</h3>
+                  <p className="text-xs text-slate-500">
+                    {currentUser.displayName} · {ROLE_LABELS[currentUser.role]}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSigModalOpen(false)}
+                aria-label="Tutup modal tanda tangan"
+                className="p-1.5 text-slate-500 hover:text-slate-900 rounded-md"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <SignatureInput
+              value={mySigDraft}
+              onChange={setMySigDraft}
+              label="Tanda Tangan untuk Dokumen Cetak"
+              helperText="Tersimpan ke database online dan otomatis tampil saat Anda mencetak dokumen sebagai user login."
+            />
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setSigModalOpen(false)}
+                className="px-3.5 py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={savingMySig}
+                onClick={async () => {
+                  setSavingMySig(true);
+                  try {
+                    await updateMySignature(mySigDraft);
+                    setSigModalOpen(false);
+                  } finally {
+                    setSavingMySig(false);
+                  }
+                }}
+                className="px-4 py-2 text-xs font-semibold rounded-lg bg-teal-700 text-white hover:bg-teal-800 disabled:opacity-60"
+              >
+                {savingMySig ? 'Menyimpan...' : 'Simpan Tanda Tangan'}
               </button>
             </div>
           </div>

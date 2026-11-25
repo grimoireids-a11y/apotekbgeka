@@ -12,7 +12,15 @@ import {
   setDoc,
   writeBatch
 } from 'firebase/firestore';
-import { auth, db, handleFirestoreError, OperationType, signInWithGoogleFirebase, signOutFirebase } from '../lib/firebase';
+import {
+  auth,
+  db,
+  FIREBASE_VAULT_CONTEXT,
+  handleFirestoreError,
+  OperationType,
+  signInWithGoogleFirebase,
+  signOutFirebase
+} from '../lib/firebase';
 import type {
   AuditLog,
   CollectionName,
@@ -35,13 +43,45 @@ import {
   deriveUserKek,
   encryptRecordFields,
   generateVaultKey,
-  unwrapVaultKeyForAccount
+  unwrapVaultKeyForAccount,
+  wrapVaultKeyForAccount
 } from '../utils/cryptoE2EE';
 import { hasPermission } from '../utils/rbac';
 
 const PATIENT_SENSITIVE_FIELDS = ['nik', 'phone', 'email', 'address', 'familyPhone', 'emergencyContact', 'allergies'];
 const RME_SENSITIVE_FIELDS = ['doctorNotes'];
 const BOOTSTRAP_SUPERADMIN_EMAIL = 'grimoireids@gmail.com';
+const CLOUD_VAULT_SALT_B64 = 'b2JneW4tc3BvZy1jbG91ZC1lMmVlLXNhbHQtdjE=';
+
+const NEWEST_FIRST_COLLECTIONS = new Set<CollectionName>([
+  'patients',
+  'visits',
+  'queues',
+  'medical_records',
+  'medical_record_versions',
+  'pregnancies',
+  'antenatal_visits',
+  'ultrasound_records',
+  'diagnoses',
+  'procedures',
+  'prescriptions',
+  'laboratory_orders',
+  'laboratory_results',
+  'invoices',
+  'invoice_items',
+  'payments',
+  'refunds',
+  'cash_sessions',
+  'cash_transactions',
+  'expenses',
+  'appointments',
+  'documents',
+  'notifications',
+  'audit_logs',
+  'backups'
+]);
+
+const CODE_SORTED_COLLECTIONS = new Set<CollectionName>(['services', 'medicines', 'icd10_codes']);
 
 const COLLECTION_LIMITS: Record<CollectionName, number> = {
   users: 500,
@@ -161,6 +201,7 @@ function buildStaffEmailDoc(user: UserAccount, actorId: string) {
     role: user.role,
     strNumber: user.strNumber || '',
     sipNumber: user.sipNumber || '',
+    signatureUrl: user.signatureUrl || '',
     active: user.active,
     createdAt: user.createdAt || nowIso,
     createdBy: user.createdBy || actorId,
@@ -252,6 +293,7 @@ interface PracticeContextValue {
     role: RoleCode;
     strNumber?: string;
     sipNumber?: string;
+    signatureUrl?: string;
   }) => Promise<void>;
   updateStaffAccount: (
     userId: string,
@@ -264,8 +306,10 @@ interface PracticeContextValue {
       newPassword?: string;
       strNumber?: string;
       sipNumber?: string;
+      signatureUrl?: string;
     }
   ) => Promise<void>;
+  updateMySignature: (signatureUrl: string) => Promise<void>;
   deleteStaffAccount: (userId: string) => Promise<void>;
   pushNotification: (item: Omit<NotificationItem, 'id' | 'createdAt' | 'createdBy' | 'updatedAt' | 'updatedBy' | 'read'>) => Promise<void>;
   loadDemoData: () => Promise<void>;
@@ -503,6 +547,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       role: isBootstrappedAdmin ? 'SUPER_ADMIN' : (matched?.role as RoleCode) || 'DOKTER_SPOG',
       strNumber: matched?.strNumber,
       sipNumber: matched?.sipNumber,
+      signatureUrl: matched?.signatureUrl || '',
       active: true,
       createdAt: matched?.createdAt || nowIso,
       createdBy: matched?.createdBy || fbUser.uid,
@@ -512,6 +557,83 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
   }, []);
 
+  /**
+   * Resolves a persistent Practice E2EE Vault Key stored in Cloud Firestore (`system_settings/main`)
+   * so all staff sessions across AI Studio, Vercel, and browser reloads decrypt the exact same data.
+   */
+  const resolvePersistentCloudVaultKey = useCallback(async (fbUser: FirebaseUser, isSuperAdmin: boolean) => {
+    const cloudKek = await deriveUserKek(`${FIREBASE_VAULT_CONTEXT}:obgyn-cloud-vault-v1`, CLOUD_VAULT_SALT_B64);
+    try {
+      const sysRef = doc(db, 'system_settings', 'main');
+      const sysSnap = await getDoc(sysRef);
+      if (sysSnap.exists()) {
+        const sysData = sysSnap.data() as Partial<SystemSettings>;
+        if (typeof sysData.e2eeCloudWrappedKey === 'string' && sysData.e2eeCloudWrappedKey.length > 0) {
+          const unwrapped = await unwrapVaultKeyForAccount(sysData.e2eeCloudWrappedKey, cloudKek);
+          vaultKeyRef.current = unwrapped.key;
+          setE2eeFingerprint(unwrapped.fingerprint);
+          setE2eeUnlocked(true);
+          return unwrapped;
+        }
+        // System settings doc exists but does not yet have a persistent wrapped key -> create & save one if Super Admin
+        const generated = await generateVaultKey();
+        const wrapped = await wrapVaultKeyForAccount(generated.key, cloudKek);
+        vaultKeyRef.current = generated.key;
+        setE2eeFingerprint(generated.fingerprint);
+        setE2eeUnlocked(true);
+        if (isSuperAdmin) {
+          const nowIso = new Date().toISOString();
+          await setDoc(
+            sysRef,
+            stripUndefinedDeep({
+              ...createDefaultSystemSettings(),
+              ...sysData,
+              id: 'main',
+              e2eeKeyFingerprint: generated.fingerprint,
+              e2eeCloudWrappedKey: wrapped,
+              createdAt: sysData.createdAt || nowIso,
+              createdBy: sysData.createdBy || fbUser.uid,
+              updatedAt: nowIso,
+              updatedBy: fbUser.uid
+            })
+          );
+        }
+        return { key: generated.key, fingerprint: generated.fingerprint };
+      } else {
+        // Brand-new database: create persistent vault key and save to system_settings/main if Super Admin
+        const generated = await generateVaultKey();
+        const wrapped = await wrapVaultKeyForAccount(generated.key, cloudKek);
+        vaultKeyRef.current = generated.key;
+        setE2eeFingerprint(generated.fingerprint);
+        setE2eeUnlocked(true);
+        if (isSuperAdmin) {
+          const nowIso = new Date().toISOString();
+          const defSys = createDefaultSystemSettings();
+          await setDoc(
+            sysRef,
+            stripUndefinedDeep({
+              ...defSys,
+              id: 'main',
+              e2eeKeyFingerprint: generated.fingerprint,
+              e2eeCloudWrappedKey: wrapped,
+              createdAt: nowIso,
+              createdBy: fbUser.uid,
+              updatedAt: nowIso,
+              updatedBy: fbUser.uid
+            })
+          );
+        }
+        return { key: generated.key, fingerprint: generated.fingerprint };
+      }
+    } catch {
+      const fallback = await generateVaultKey();
+      vaultKeyRef.current = fallback.key;
+      setE2eeFingerprint(fallback.fingerprint);
+      setE2eeUnlocked(true);
+      return { key: fallback.key, fingerprint: fallback.fingerprint };
+    }
+  }, []);
+
   // Listen to Firebase Auth state ONCE on mount
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (fbUser) => {
@@ -519,15 +641,14 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (fbUser && authModeRef.current === 'none') {
         try {
           const fbProfile = await resolveFirebaseStaffProfile(fbUser);
-          if (!vaultKeyRef.current) {
-            const v = await generateVaultKey();
-            vaultKeyRef.current = v.key;
-            setE2eeFingerprint(v.fingerprint);
-            setE2eeUnlocked(true);
-          }
-          setCurrentUser(fbProfile);
+          const vault = await resolvePersistentCloudVaultKey(fbUser, fbProfile.role === 'SUPER_ADMIN');
+          const hydratedProfile: UserAccount = {
+            ...fbProfile,
+            e2eeFingerprint: vault.fingerprint
+          };
+          setCurrentUser(hydratedProfile);
           setAuthMode('firebase');
-          await ensureCloudBaselineSeeded(fbUser, fbProfile);
+          await ensureCloudBaselineSeeded(fbUser, hydratedProfile);
         } catch (err) {
           notifyToast(err instanceof Error ? err.message : 'Gagal memverifikasi akun Firebase.', 'error');
         }
@@ -537,16 +658,19 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setLoading(false);
     });
     return () => unsub();
-  }, [ensureCloudBaselineSeeded, notifyToast, resolveFirebaseStaffProfile]);
+  }, [ensureCloudBaselineSeeded, notifyToast, resolveFirebaseStaffProfile, resolvePersistentCloudVaultKey]);
 
   // Subscribe to ALL role-permitted Cloud Firestore collections in real time whenever firebaseUser & currentUser are active
+  const currentUserId = currentUser?.id || '';
+  const currentUserRole = currentUser?.role || null;
+
   useEffect(() => {
-    if (!firebaseUser || !currentUser) {
+    if (!firebaseUser || !currentUserRole) {
       setCloudSynced(false);
       return;
     }
 
-    const allowedCols = getAllowedCollectionsForRole(currentUser.role);
+    const allowedCols = getAllowedCollectionsForRole(currentUserRole);
     let activeCount = 0;
 
     const unsubs = allowedCols.map((colName) => {
@@ -567,9 +691,10 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               docs.map((d) => decryptRecordFields(d, vaultKeyRef.current))
             );
           }
-          // Sort audit logs & notifications newest first
-          if (colName === 'audit_logs' || colName === 'notifications' || colName === 'backups') {
+          if (NEWEST_FIRST_COLLECTIONS.has(colName)) {
             processed.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+          } else if (CODE_SORTED_COLLECTIONS.has(colName)) {
+            processed.sort((a, b) => String(a.code || '').localeCompare(String(b.code || '')));
           }
 
           setDbState((prev) => {
@@ -579,6 +704,28 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             }
             return { ...prev, [colName]: processed };
           });
+
+          // Keep active user's profile/signature synced in real-time
+          if (colName === 'users' && currentUserId) {
+            const liveSelf = processed.find((u) => String(u.id) === currentUserId) as UserAccount | undefined;
+            if (liveSelf) {
+              setCurrentUser((prev) =>
+                prev &&
+                (prev.displayName !== liveSelf.displayName ||
+                  prev.signatureUrl !== liveSelf.signatureUrl ||
+                  prev.strNumber !== liveSelf.strNumber ||
+                  prev.sipNumber !== liveSelf.sipNumber)
+                  ? {
+                      ...prev,
+                      displayName: liveSelf.displayName,
+                      signatureUrl: liveSelf.signatureUrl,
+                      strNumber: liveSelf.strNumber,
+                      sipNumber: liveSelf.sipNumber
+                    }
+                  : prev
+              );
+            }
+          }
         },
         (error) => {
           try {
@@ -593,7 +740,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return () => {
       unsubs.forEach((u) => u());
     };
-  }, [currentUser, firebaseUser]);
+  }, [currentUserId, currentUserRole, firebaseUser]);
 
   const loginStaff = useCallback(
     async (username: string, password: string) => {
@@ -653,11 +800,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       throw new Error(formatFirebaseAuthError(err));
     }
     const profile = await resolveFirebaseStaffProfile(fbUser);
-
-    const vault = await generateVaultKey();
-    vaultKeyRef.current = vault.key;
-    setE2eeFingerprint(vault.fingerprint);
-    setE2eeUnlocked(true);
+    const vault = await resolvePersistentCloudVaultKey(fbUser, profile.role === 'SUPER_ADMIN');
 
     const fullProfile: UserAccount = {
       ...profile,
@@ -669,8 +812,8 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setActiveView('dashboard');
     await ensureCloudBaselineSeeded(fbUser, fullProfile);
     await writeCloudAuditLog(fullProfile, 'LOGIN_FIREBASE', 'auth', fbUser.uid, undefined, `Login Google Cloud Firestore (${fbUser.email})`);
-    notifyToast(`Login berhasil sebagai ${fullProfile.displayName}. Database online tersinkron otomatis.`, 'success');
-  }, [ensureCloudBaselineSeeded, notifyToast, resolveFirebaseStaffProfile, writeCloudAuditLog]);
+    notifyToast(`Login berhasil sebagai ${fullProfile.displayName}. Seluruh data database online tersinkron real-time.`, 'success');
+  }, [ensureCloudBaselineSeeded, notifyToast, resolveFirebaseStaffProfile, resolvePersistentCloudVaultKey, writeCloudAuditLog]);
 
   const logout = useCallback(async () => {
     if (authMode === 'staff' && bearerTokenRef.current) {
@@ -834,6 +977,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       role: RoleCode;
       strNumber?: string;
       sipNumber?: string;
+      signatureUrl?: string;
     }) => {
       if (!currentUser || currentUser.role !== 'SUPER_ADMIN') {
         throw new Error('Hanya Super Admin yang dapat membuat akun pengguna.');
@@ -879,6 +1023,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           role: payload.role,
           strNumber: payload.strNumber?.trim() || '',
           sipNumber: payload.sipNumber?.trim() || '',
+          signatureUrl: payload.signatureUrl || '',
           active: true,
           e2eeFingerprint: e2eeFingerprint || 'CLOUD-MANAGED',
           createdAt: nowIso,
@@ -932,6 +1077,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         newPassword?: string;
         strNumber?: string;
         sipNumber?: string;
+        signatureUrl?: string;
       }
     ) => {
       if (!currentUser || currentUser.role !== 'SUPER_ADMIN') {
@@ -970,6 +1116,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           active: typeof payload.active === 'boolean' && userId !== currentUser.id ? payload.active : prevUser.active,
           strNumber: typeof payload.strNumber === 'string' ? payload.strNumber.trim() : prevUser.strNumber,
           sipNumber: typeof payload.sipNumber === 'string' ? payload.sipNumber.trim() : prevUser.sipNumber,
+          signatureUrl: typeof payload.signatureUrl === 'string' ? payload.signatureUrl : prevUser.signatureUrl,
           updatedAt: nowIso,
           updatedBy: currentUser.id
         };
@@ -1015,6 +1162,63 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       notifyToast(`Akun ${updatedUser.displayName} berhasil diperbarui.`, 'success');
     },
     [authMode, currentUser, notifyToast, writeCloudAuditLog]
+  );
+
+  const updateMySignature = useCallback(
+    async (signatureUrl: string) => {
+      if (!currentUser) throw new Error('Pengguna belum login.');
+      const nowIso = new Date().toISOString();
+      const updatedSelf: UserAccount = {
+        ...currentUser,
+        signatureUrl,
+        updatedAt: nowIso,
+        updatedBy: currentUser.id
+      };
+
+      if (authMode === 'staff' && bearerTokenRef.current) {
+        const res = await fetch('/api/auth/me/signature', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${bearerTokenRef.current}`
+          },
+          body: JSON.stringify({ signatureUrl })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Gagal menyimpan tanda tangan ke server.');
+      }
+
+      if (auth.currentUser) {
+        try {
+          const targetId = auth.currentUser.uid;
+          const existingDoc = await getDoc(doc(db, 'users', targetId));
+          const base = existingDoc.exists() ? (existingDoc.data() as UserAccount) : updatedSelf;
+          const nextDoc: UserAccount = {
+            ...base,
+            id: targetId,
+            signatureUrl,
+            updatedAt: nowIso,
+            updatedBy: targetId
+          };
+          await setDoc(doc(db, 'users', targetId), stripUndefinedDeep(nextDoc));
+          if (currentUser.role === 'SUPER_ADMIN' && nextDoc.email) {
+            const emailLower = nextDoc.email.trim().toLowerCase();
+            await setDoc(doc(db, 'staff_emails', emailLower), buildStaffEmailDoc(nextDoc, targetId));
+          }
+        } catch (err) {
+          notifyToast('Gagal menyimpan tanda tangan ke database online.', 'error');
+          handleFirestoreError(err, OperationType.UPDATE, `users/${auth.currentUser.uid}`);
+        }
+      }
+
+      setCurrentUser(updatedSelf);
+      setDbState((prev) => ({
+        ...prev,
+        users: prev.users.map((u) => (u.id === updatedSelf.id ? { ...u, signatureUrl, updatedAt: nowIso } : u))
+      }));
+      notifyToast('Tanda tangan digital Anda berhasil disimpan.', 'success');
+    },
+    [authMode, currentUser, notifyToast]
   );
 
   const deleteStaffAccount = useCallback(
@@ -1314,12 +1518,18 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   );
 
   const practice = useMemo(
-    () => dbState.practice_settings[0] || createDefaultPracticeSettings(),
+    () =>
+      dbState.practice_settings.find((p) => p.id === 'main') ||
+      dbState.practice_settings[0] ||
+      createDefaultPracticeSettings(),
     [dbState.practice_settings]
   );
 
   const systemSettings = useMemo(
-    () => dbState.system_settings[0] || createDefaultSystemSettings(),
+    () =>
+      dbState.system_settings.find((s) => s.id === 'main') ||
+      dbState.system_settings[0] ||
+      createDefaultSystemSettings(),
     [dbState.system_settings]
   );
 
@@ -1360,6 +1570,7 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     deleteRecord,
     createStaffAccount,
     updateStaffAccount,
+    updateMySignature,
     deleteStaffAccount,
     pushNotification,
     loadDemoData,

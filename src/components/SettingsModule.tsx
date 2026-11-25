@@ -8,6 +8,7 @@ import {
   Edit3,
   Link2,
   Lock,
+  PenTool,
   Pill,
   Plus,
   Save,
@@ -20,6 +21,7 @@ import {
   X
 } from 'lucide-react';
 import { usePractice } from '../context/PracticeContext';
+import { SignatureInput } from './SignatureInput';
 import type {
   BackupRecord,
   DocumentTemplates,
@@ -152,6 +154,9 @@ export const SettingsModule: React.FC = () => {
   const [editingUser, setEditingUser] = useState<UserAccount | null>(null);
   const [resetTargetUserId, setResetTargetUserId] = useState<string | null>(null);
   const [resetPasswordValue, setResetPasswordValue] = useState('');
+  const [sigModalUser, setSigModalUser] = useState<UserAccount | null>(null);
+  const [sigDraft, setSigDraft] = useState('');
+  const [savingUserSig, setSavingUserSig] = useState(false);
 
   // Role & Custom Permission editor state
   const [editingRole, setEditingRole] = useState<RoleDefinition | null>(null);
@@ -295,6 +300,16 @@ export const SettingsModule: React.FC = () => {
                 />
               </div>
             </div>
+          </div>
+
+          <div className="pb-5 border-b border-slate-100">
+            <SignatureInput
+              value={practiceForm.doctorSignatureUrl || ''}
+              onChange={(val) => setPracticeForm((prev) => ({ ...prev, doctorSignatureUrl: val }))}
+              label="Tanda Tangan Resmi Dokter Penanggung Jawab (Untuk Semua Dokumen Cetak)"
+              helperText="Tanda tangan ini otomatis ditampilkan pada Resep, Laporan USG, Surat Keterangan, Rujukan, RME, dan Kuitansi saat menggunakan penandatangan Dokter Praktik."
+              compact
+            />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1912,6 +1927,12 @@ export const SettingsModule: React.FC = () => {
                                   {u.sipNumber ? `SIP: ${u.sipNumber}` : ''}
                                 </p>
                               )}
+                              <p className="text-[10px] mt-0.5 text-slate-500">
+                                TTD Digital:{' '}
+                                <span className={u.signatureUrl ? 'text-emerald-700 font-semibold' : 'text-slate-400'}>
+                                  {u.signatureUrl ? 'Tersimpan' : 'Belum diatur'}
+                                </span>
+                              </p>
                             </div>
                           )}
                         </td>
@@ -1989,6 +2010,16 @@ export const SettingsModule: React.FC = () => {
                               <button
                                 type="button"
                                 onClick={() => {
+                                  setSigModalUser(u);
+                                  setSigDraft(u.signatureUrl || '');
+                                }}
+                                className="text-teal-800 hover:text-teal-950 font-semibold"
+                              >
+                                TTD
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
                                   setEditingUser(null);
                                   setResetTargetUserId(resetTargetUserId === u.id ? null : u.id);
                                 }}
@@ -2057,6 +2088,66 @@ export const SettingsModule: React.FC = () => {
             </table>
           </div>
         </div>
+
+        {sigModalUser && (
+          <div
+            className="fixed inset-0 z-50 bg-slate-900/45 flex items-center justify-center p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Atur Tanda Tangan ${sigModalUser.displayName}`}
+          >
+            <div className="bg-white border border-slate-200 rounded-xl max-w-lg w-full p-6 space-y-5 shadow-xl">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <PenTool className="w-4 h-4 text-teal-700" />
+                  <h3 className="text-sm font-bold text-slate-900">
+                    Tanda Tangan Digital — {sigModalUser.displayName}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSigModalUser(null)}
+                  className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <SignatureInput
+                value={sigDraft}
+                onChange={setSigDraft}
+                label={`Tanda Tangan (${ROLE_LABELS[sigModalUser.role]})`}
+                helperText="Akan tampil otomatis di setiap dokumen yang dicetak oleh pengguna ini."
+              />
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setSigModalUser(null)}
+                  className="px-3.5 py-2 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  disabled={savingUserSig}
+                  onClick={async () => {
+                    setSavingUserSig(true);
+                    try {
+                      await updateStaffAccount(sigModalUser.id, { signatureUrl: sigDraft });
+                      setSigModalUser(null);
+                    } catch (err) {
+                      notifyToast(err instanceof Error ? err.message : 'Gagal menyimpan tanda tangan.', 'error');
+                    } finally {
+                      setSavingUserSig(false);
+                    }
+                  }}
+                  className="px-4 py-2 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 disabled:opacity-60"
+                >
+                  {savingUserSig ? 'Menyimpan...' : 'Simpan Tanda Tangan'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }

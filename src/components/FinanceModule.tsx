@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   ArrowDownLeft,
@@ -93,6 +93,7 @@ export const FinanceModule: React.FC = () => {
     currentUser,
     practice,
     upsertRecord,
+    deleteRecord,
     pushNotification,
     notifyToast,
     setPrintPayload
@@ -101,6 +102,7 @@ export const FinanceModule: React.FC = () => {
   const today = new Date().toISOString().slice(0, 10);
   const canOperateCashier = currentUser ? canModifyProcessedPayment(currentUser.role) : false;
   const isRefundApprover = currentUser ? canApproveRefund(currentUser.role) : false;
+  const isSuperAdmin = currentUser?.role === 'SUPER_ADMIN';
 
   // ==================== CASHIER STATE ====================
   const unpaidOrPartialInvoices = useMemo(
@@ -115,6 +117,21 @@ export const FinanceModule: React.FC = () => {
     unpaidOrPartialInvoices[0]?.id || dbState.invoices[0]?.id || ''
   );
   const [newInvoiceVisitId, setNewInvoiceVisitId] = useState<string>(dbState.visits[0]?.id || '');
+  const [confirmDeleteTxKey, setConfirmDeleteTxKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedInvoiceId || !dbState.invoices.some((i) => i.id === selectedInvoiceId)) {
+      const next = unpaidOrPartialInvoices[0]?.id || dbState.invoices[0]?.id || '';
+      if (next !== selectedInvoiceId) setSelectedInvoiceId(next);
+    }
+  }, [dbState.invoices, selectedInvoiceId, unpaidOrPartialInvoices]);
+
+  useEffect(() => {
+    if (!newInvoiceVisitId || !dbState.visits.some((v) => v.id === newInvoiceVisitId)) {
+      const next = dbState.visits[0]?.id || '';
+      if (next !== newInvoiceVisitId) setNewInvoiceVisitId(next);
+    }
+  }, [dbState.visits, newInvoiceVisitId]);
 
   // Editable billing adjustment fields
   const [customItemDesc, setCustomItemDesc] = useState('');
@@ -797,6 +814,92 @@ export const FinanceModule: React.FC = () => {
     notifyToast('Tutup kas harian berhasil disimpan.', 'success');
   };
 
+  // ==================== SUPER ADMIN DELETE TRANSACTION HANDLERS ====================
+  const handleDeleteInvoice = async (inv: Invoice) => {
+    if (!isSuperAdmin) return;
+    const linkedPayments = dbState.payments.filter((p) => p.invoiceId === inv.id);
+    for (const p of linkedPayments) {
+      const linkedCash = dbState.cash_transactions.filter((c) => c.referenceId === p.id);
+      for (const c of linkedCash) {
+        await deleteRecord('cash_transactions', c.id);
+      }
+      await deleteRecord('payments', p.id);
+    }
+    const linkedRefunds = dbState.refunds.filter((r) => r.invoiceId === inv.id);
+    for (const r of linkedRefunds) {
+      const linkedRefCash = dbState.cash_transactions.filter((c) => c.referenceId === r.id);
+      for (const c of linkedRefCash) {
+        await deleteRecord('cash_transactions', c.id);
+      }
+      await deleteRecord('refunds', r.id);
+    }
+    await deleteRecord('invoices', inv.id);
+    const visit = dbState.visits.find((v) => v.id === inv.visitId);
+    if (visit) {
+      await upsertRecord('visits', { ...visit, paymentStatus: 'Belum Dibayar' });
+    }
+    setConfirmDeleteTxKey(null);
+    notifyToast(`Transaksi tagihan ${inv.invoiceNumber} berhasil dihapus permanen.`, 'info');
+  };
+
+  const handleDeletePayment = async (payment: Payment) => {
+    if (!isSuperAdmin) return;
+    const linkedCash = dbState.cash_transactions.filter((c) => c.referenceId === payment.id);
+    for (const c of linkedCash) {
+      await deleteRecord('cash_transactions', c.id);
+    }
+    await deleteRecord('payments', payment.id);
+    const inv = dbState.invoices.find((i) => i.id === payment.invoiceId);
+    if (inv) {
+      const remainingPaid = dbState.payments
+        .filter((p) => p.invoiceId === inv.id && p.id !== payment.id && p.status === 'Sukses')
+        .reduce((sum, p) => sum + p.amount, 0);
+      const nextRemaining = Math.max(0, inv.total - remainingPaid);
+      const nextStatus: Invoice['status'] =
+        nextRemaining === 0 && inv.total > 0 ? 'Lunas' : remainingPaid > 0 ? 'Piutang' : 'Belum Dibayar';
+      await upsertRecord('invoices', {
+        ...inv,
+        paidAmount: remainingPaid,
+        remainingAmount: nextRemaining,
+        status: nextStatus
+      });
+      const visit = dbState.visits.find((v) => v.id === inv.visitId);
+      if (visit) {
+        await upsertRecord('visits', { ...visit, paymentStatus: nextStatus });
+      }
+    }
+    setConfirmDeleteTxKey(null);
+    notifyToast(`Transaksi pembayaran ${payment.receiptNumber} berhasil dihapus permanen.`, 'info');
+  };
+
+  const handleDeleteRefund = async (refund: Refund) => {
+    if (!isSuperAdmin) return;
+    const linkedCash = dbState.cash_transactions.filter((c) => c.referenceId === refund.id);
+    for (const c of linkedCash) {
+      await deleteRecord('cash_transactions', c.id);
+    }
+    await deleteRecord('refunds', refund.id);
+    setConfirmDeleteTxKey(null);
+    notifyToast(`Data refund ${refund.receiptNumber} berhasil dihapus permanen.`, 'info');
+  };
+
+  const handleDeleteCashTransaction = async (tx: CashTransaction) => {
+    if (!isSuperAdmin) return;
+    if (tx.referenceId && dbState.expenses.some((e) => e.id === tx.referenceId)) {
+      await deleteRecord('expenses', tx.referenceId);
+    }
+    await deleteRecord('cash_transactions', tx.id);
+    setConfirmDeleteTxKey(null);
+    notifyToast(`Transaksi kas "${tx.description}" berhasil dihapus permanen.`, 'info');
+  };
+
+  const handleDeleteCashSession = async (session: CashSession) => {
+    if (!isSuperAdmin) return;
+    await deleteRecord('cash_sessions', session.id);
+    setConfirmDeleteTxKey(null);
+    notifyToast(`Sesi kas tanggal ${session.sessionDate} berhasil dihapus permanen.`, 'info');
+  };
+
   // ==================== VIEW: CASHIER ====================
   if (activeView === 'cashier') {
     const paymentPreviewAmount = Number(payAmount || activeInvoice?.remainingAmount || 0);
@@ -1222,7 +1325,7 @@ export const FinanceModule: React.FC = () => {
                         {inv.status}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-right">
+                    <td className="px-4 py-3 text-right space-x-2.5 whitespace-nowrap">
                       <button
                         type="button"
                         onClick={() => {
@@ -1233,6 +1336,34 @@ export const FinanceModule: React.FC = () => {
                       >
                         {inv.remainingAmount > 0 ? 'Proses Kasir' : 'Detail'}
                       </button>
+                      {isSuperAdmin &&
+                        (confirmDeleteTxKey === `inv:${inv.id}` ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteInvoice(inv)}
+                              className="px-2 py-1 rounded bg-red-600 text-white font-semibold hover:bg-red-700"
+                            >
+                              Ya, Hapus
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteTxKey(null)}
+                              className="text-slate-500 hover:text-slate-800"
+                            >
+                              Batal
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteTxKey(`inv:${inv.id}`)}
+                            className="inline-flex items-center gap-1 text-red-600 hover:text-red-800 font-semibold"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Hapus
+                          </button>
+                        ))}
                     </td>
                   </tr>
                 ))}
@@ -1404,6 +1535,34 @@ export const FinanceModule: React.FC = () => {
                               </button>
                             </>
                           )}
+                          {isSuperAdmin &&
+                            (confirmDeleteTxKey === `pay:${p.id}` ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleDeletePayment(p)}
+                                  className="px-2 py-1 rounded bg-red-600 text-white font-semibold hover:bg-red-700"
+                                >
+                                  Ya, Hapus
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteTxKey(null)}
+                                  className="text-slate-500 hover:text-slate-800"
+                                >
+                                  Batal
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteTxKey(`pay:${p.id}`)}
+                                className="inline-flex items-center gap-1 text-red-600 hover:text-red-800 font-semibold"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                Hapus
+                              </button>
+                            ))}
                         </td>
                       </tr>
                       {cancelTargetId === p.id && (
@@ -1489,6 +1648,34 @@ export const FinanceModule: React.FC = () => {
                         </button>
                       </>
                     )}
+                    {isSuperAdmin &&
+                      (confirmDeleteTxKey === `ref:${ref.id}` ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteRefund(ref)}
+                            className="px-2.5 py-1 rounded bg-red-600 text-white font-semibold hover:bg-red-700"
+                          >
+                            Ya, Hapus
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteTxKey(null)}
+                            className="text-slate-500 hover:text-slate-800"
+                          >
+                            Batal
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteTxKey(`ref:${ref.id}`)}
+                          className="inline-flex items-center gap-1 text-red-600 hover:text-red-800 font-semibold"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Hapus
+                        </button>
+                      ))}
                   </div>
                 </div>
               ))}
@@ -1654,6 +1841,7 @@ export const FinanceModule: React.FC = () => {
                   <th className="px-4 py-3 text-left font-semibold">Keterangan</th>
                   <th className="px-4 py-3 text-left font-semibold">Metode</th>
                   <th className="px-4 py-3 text-right font-semibold">Nominal</th>
+                  {isSuperAdmin && <th className="px-4 py-3 text-right font-semibold">Aksi</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -1669,8 +1857,46 @@ export const FinanceModule: React.FC = () => {
                         {formatCurrencyIDR(t.amount)}
                       </span>
                     </td>
+                    {isSuperAdmin && (
+                      <td className="px-4 py-3 text-right whitespace-nowrap space-x-2">
+                        {confirmDeleteTxKey === `ctx:${t.id}` ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteCashTransaction(t)}
+                              className="px-2 py-1 rounded bg-red-600 text-white font-semibold"
+                            >
+                              Ya, Hapus
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteTxKey(null)}
+                              className="text-slate-500"
+                            >
+                              Batal
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteTxKey(`ctx:${t.id}`)}
+                            className="inline-flex items-center gap-1 text-red-600 hover:text-red-800 font-semibold"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Hapus
+                          </button>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
+                {cashIns.length === 0 && (
+                  <tr>
+                    <td colSpan={isSuperAdmin ? 6 : 5} className="px-4 py-8 text-center text-slate-500">
+                      Belum ada pencatatan kas masuk.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -1761,6 +1987,7 @@ export const FinanceModule: React.FC = () => {
                   <th className="px-4 py-3 text-left font-semibold">Keterangan</th>
                   <th className="px-4 py-3 text-left font-semibold">Metode</th>
                   <th className="px-4 py-3 text-right font-semibold">Nominal</th>
+                  {isSuperAdmin && <th className="px-4 py-3 text-right font-semibold">Aksi</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -1776,11 +2003,42 @@ export const FinanceModule: React.FC = () => {
                         {formatCurrencyIDR(t.amount)}
                       </span>
                     </td>
+                    {isSuperAdmin && (
+                      <td className="px-4 py-3 text-right whitespace-nowrap space-x-2">
+                        {confirmDeleteTxKey === `ctx:${t.id}` ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteCashTransaction(t)}
+                              className="px-2 py-1 rounded bg-red-600 text-white font-semibold"
+                            >
+                              Ya, Hapus
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteTxKey(null)}
+                              className="text-slate-500"
+                            >
+                              Batal
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteTxKey(`ctx:${t.id}`)}
+                            className="inline-flex items-center gap-1 text-red-600 hover:text-red-800 font-semibold"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Hapus
+                          </button>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
                 {cashOuts.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
+                    <td colSpan={isSuperAdmin ? 6 : 5} className="px-4 py-8 text-center text-slate-500">
                       Belum ada pencatatan kas keluar.
                     </td>
                   </tr>
@@ -1954,6 +2212,7 @@ export const FinanceModule: React.FC = () => {
                   <th className="px-4 py-3 text-right font-semibold">Kas Fisik</th>
                   <th className="px-4 py-3 text-right font-semibold">Selisih</th>
                   <th className="px-4 py-3 text-left font-semibold">Status</th>
+                  {isSuperAdmin && <th className="px-4 py-3 text-right font-semibold">Aksi</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -1978,6 +2237,37 @@ export const FinanceModule: React.FC = () => {
                       {s.variance !== undefined ? formatCurrencyIDR(s.variance) : '-'}
                     </td>
                     <td className="px-4 py-3 font-semibold text-slate-700">{s.status}</td>
+                    {isSuperAdmin && (
+                      <td className="px-4 py-3 text-right whitespace-nowrap space-x-2">
+                        {confirmDeleteTxKey === `cs:${s.id}` ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteCashSession(s)}
+                              className="px-2 py-1 rounded bg-red-600 text-white font-semibold"
+                            >
+                              Ya, Hapus
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteTxKey(null)}
+                              className="text-slate-500"
+                            >
+                              Batal
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteTxKey(`cs:${s.id}`)}
+                            className="inline-flex items-center gap-1 text-red-600 hover:text-red-800 font-semibold"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Hapus
+                          </button>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

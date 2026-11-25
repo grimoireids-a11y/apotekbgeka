@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Bell,
   Calendar,
@@ -26,8 +26,12 @@ export const AdminOpsModule: React.FC = () => {
     can
   } = usePractice();
 
-  // Schedule state
+  // Schedule state (synced with live Firestore systemSettings)
   const [slots, setSlots] = useState<PracticeScheduleSlot[]>(systemSettings.scheduleSlots);
+
+  useEffect(() => {
+    setSlots(systemSettings.scheduleSlots);
+  }, [systemSettings.scheduleSlots]);
 
   // Appointment form
   const [aptForm, setAptForm] = useState({
@@ -44,6 +48,33 @@ export const AdminOpsModule: React.FC = () => {
     title: 'Surat Keterangan Pemeriksaan Kehamilan',
     content: systemSettings.templates.suratKeteranganBody
   });
+
+  useEffect(() => {
+    if (dbState.patients.length === 0) return;
+    setAptForm((prev) =>
+      prev.patientId && dbState.patients.some((p) => p.id === prev.patientId)
+        ? prev
+        : { ...prev, patientId: dbState.patients[0].id }
+    );
+    setDocForm((prev) =>
+      prev.patientId && dbState.patients.some((p) => p.id === prev.patientId)
+        ? prev
+        : { ...prev, patientId: dbState.patients[0].id }
+    );
+  }, [dbState.patients]);
+
+  useEffect(() => {
+    setDocForm((prev) => {
+      if (prev.content.trim()) return prev;
+      return {
+        ...prev,
+        content:
+          prev.docType === 'Surat Rujukan'
+            ? systemSettings.templates.suratRujukanHeader
+            : systemSettings.templates.suratKeteranganBody
+      };
+    });
+  }, [systemSettings.templates.suratKeteranganBody, systemSettings.templates.suratRujukanHeader]);
 
   // ==================== 1. JADWAL PRAKTIK ====================
   if (activeView === 'schedule') {

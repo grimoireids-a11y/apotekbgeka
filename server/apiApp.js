@@ -904,7 +904,7 @@ export function createApiApp() {
       res.status(403).json({ error: 'Hanya Super Admin yang dapat membuat akun pengguna.' });
       return;
     }
-    const { username, password, displayName, email, role, strNumber, sipNumber } = req.body || {};
+    const { username, password, displayName, email, role, strNumber, sipNumber, signatureUrl } = req.body || {};
     const normUser = String(username || '').trim().toLowerCase();
     if (!normUser || !/^[a-z0-9._-]{3,40}$/.test(normUser)) {
       res.status(400).json({ error: 'Username harus 3-40 karakter (huruf, angka, titik, garis bawah).' });
@@ -937,6 +937,7 @@ export function createApiApp() {
       role,
       strNumber: strNumber ? String(strNumber).trim() : '',
       sipNumber: sipNumber ? String(sipNumber).trim() : '',
+      signatureUrl: typeof signatureUrl === 'string' ? signatureUrl : '',
       active: true,
       e2eeSalt: cred.e2eeSalt,
       e2eeWrappedKey: cred.e2eeWrappedKey,
@@ -973,7 +974,7 @@ export function createApiApp() {
       res.status(404).json({ error: 'Pengguna tidak ditemukan.' });
       return;
     }
-    const { username, displayName, email, role, active, newPassword, strNumber, sipNumber } = req.body || {};
+    const { username, displayName, email, role, active, newPassword, strNumber, sipNumber, signatureUrl } = req.body || {};
 
     const beforeSummary = `${user.username} | ${user.displayName} | ${user.role} | active=${user.active}`;
     const prevUsername = user.username.toLowerCase();
@@ -1007,6 +1008,7 @@ export function createApiApp() {
     }
     if (typeof strNumber === 'string') user.strNumber = strNumber.trim();
     if (typeof sipNumber === 'string') user.sipNumber = sipNumber.trim();
+    if (typeof signatureUrl === 'string') user.signatureUrl = signatureUrl;
 
     if (newPassword && String(newPassword).length >= 6) {
       const vaultKeyRaw = Buffer.from(credStore.vaultKeyBase64, 'base64');
@@ -1038,6 +1040,24 @@ export function createApiApp() {
       afterData: `${user.username} | ${user.displayName} | ${user.role} | active=${user.active}`,
       deviceInfo: String(req.headers['user-agent'] || 'Web Client').slice(0, 120)
     });
+    saveDb();
+    res.json({ user });
+  });
+
+  router.patch('/auth/me/signature', requireAuth, (req, res) => {
+    const user = dbState.users.find((u) => u.id === req.session.userId);
+    if (!user) {
+      res.status(404).json({ error: 'Pengguna tidak ditemukan.' });
+      return;
+    }
+    const { signatureUrl } = req.body || {};
+    if (typeof signatureUrl !== 'string' || signatureUrl.length > 350000) {
+      res.status(400).json({ error: 'Format tanda tangan tidak valid atau ukuran melebihi batas.' });
+      return;
+    }
+    user.signatureUrl = signatureUrl;
+    user.updatedAt = new Date().toISOString();
+    user.updatedBy = req.session.userId;
     saveDb();
     res.json({ user });
   });
