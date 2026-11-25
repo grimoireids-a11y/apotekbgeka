@@ -10,7 +10,6 @@ import {
   Lock,
   Pill,
   Plus,
-  RefreshCw,
   Save,
   ScrollText,
   Shield,
@@ -66,7 +65,6 @@ export const SettingsModule: React.FC = () => {
     currentUser,
     firebaseUser,
     cloudSynced,
-    syncingCloud,
     practice,
     systemSettings,
     e2eeFingerprint,
@@ -78,8 +76,6 @@ export const SettingsModule: React.FC = () => {
     loadDemoData,
     clearDemoData,
     restoreBackupData,
-    connectFirebaseCloud,
-    syncAllToFirestore,
     notifyToast
   } = usePractice();
 
@@ -2441,45 +2437,21 @@ export const SettingsModule: React.FC = () => {
           </p>
         </div>
 
-        {/* Cloud Firestore Live Sync Control Card */}
-        <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <Cloud className={`w-5 h-5 ${cloudSynced ? 'text-emerald-600' : 'text-teal-700'}`} />
-            <div>
-              <p className="text-sm font-bold text-slate-900">
-                Database Online Cloud Firestore{' '}
-                <span className={cloudSynced ? 'text-emerald-700' : 'text-amber-700'}>
-                  ({cloudSynced ? 'Tersinkron Real-Time' : 'Belum Terhubung'})
-                </span>
-              </p>
-              <p className="text-xs text-slate-500">
-                {firebaseUser
-                  ? `Terhubung sebagai ${firebaseUser.email} — seluruh operasi tambah, ubah, dan hapus tersimpan langsung di database online.`
-                  : 'Hubungkan akun Google Firebase Anda agar setiap perubahan data tersimpan permanen secara real-time di Cloud Firestore.'}
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              disabled={syncingCloud}
-              onClick={() => void connectFirebaseCloud()}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 disabled:opacity-60 whitespace-nowrap"
-            >
-              <Cloud className="w-3.5 h-3.5" />
-              {firebaseUser ? 'Hubungkan Ulang Cloud' : 'Hubungkan Database Online'}
-            </button>
-            {firebaseUser && (
-              <button
-                type="button"
-                disabled={syncingCloud}
-                onClick={() => void syncAllToFirestore()}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-teal-300 bg-teal-50 text-teal-800 text-xs font-semibold hover:bg-teal-100 disabled:opacity-60 whitespace-nowrap"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${syncingCloud ? 'animate-spin' : ''}`} />
-                Dorong Semua Data ke Cloud
-              </button>
-            )}
+        {/* Automatic Cloud Firestore Sync Info Card (No Manual Connect Buttons) */}
+        <div className="bg-white border border-slate-200 rounded-xl p-5 flex items-start gap-3">
+          <Cloud className={`w-5 h-5 mt-0.5 shrink-0 ${cloudSynced ? 'text-emerald-600' : 'text-teal-700'}`} />
+          <div className="space-y-1">
+            <p className="text-sm font-bold text-slate-900">
+              Sinkronisasi Otomatis Cloud Firestore{' '}
+              <span className={cloudSynced ? 'text-emerald-700' : 'text-slate-500'}>
+                ({cloudSynced ? 'Aktif Real-Time' : 'Otomatis saat Login Google'})
+              </span>
+            </p>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              {firebaseUser
+                ? `Terhubung otomatis sebagai ${firebaseUser.email}. Seluruh operasi tambah, ubah, dan hapus data langsung tersimpan ke database online Cloud Firestore secara real-time tanpa tombol manual.`
+                : 'Koneksi database online Cloud Firestore berjalan otomatis saat masuk dengan akun Google terdaftar. Pastikan domain situs Anda sudah dimasukkan ke Authorized Domains di Firebase Console.'}
+            </p>
           </div>
         </div>
 

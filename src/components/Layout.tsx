@@ -9,7 +9,6 @@ import {
   CalendarClock,
   ChevronRight,
   ClipboardList,
-  Cloud,
   CreditCard,
   DatabaseBackup,
   FileCheck2,
@@ -94,10 +93,6 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     e2eeUnlocked,
     e2eeFingerprint,
     firebaseUser,
-    cloudSynced,
-    syncingCloud,
-    connectFirebaseCloud,
-    syncAllToFirestore,
     logout,
     toasts,
     dismissToast,
@@ -110,7 +105,6 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   const [notifOpen, setNotifOpen] = useState(false);
   const [e2eeModalOpen, setE2eeModalOpen] = useState(false);
   const [logoBroken, setLogoBroken] = useState(false);
-  const [cloudBannerDismissed, setCloudBannerDismissed] = useState(false);
 
   const visibleMenu = useMemo(() => {
     if (!currentUser) return [];
@@ -350,7 +344,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             )}
           </div>
 
-          {/* Zone 3: E2EE Vault Button + Notifications + Cloud Sync */}
+          {/* Zone 3: E2EE Vault Button + Notifications */}
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
@@ -360,34 +354,6 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               <KeyRound className="w-3.5 h-3.5 text-teal-700" />
               <span>{e2eeUnlocked ? 'E2EE Aktif' : 'E2EE Terkunci'}</span>
             </button>
-
-            {firebaseUser ? (
-              <button
-                type="button"
-                onClick={() => {
-                  if (currentUser?.role === 'SUPER_ADMIN') {
-                    setActiveView('settings-integrations');
-                  } else {
-                    setE2eeModalOpen(true);
-                  }
-                }}
-                title={`Tersinkron ke Cloud Firestore (${firebaseUser.email})`}
-                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 transition-colors whitespace-nowrap"
-              >
-                <span className="w-2 h-2 rounded-full bg-emerald-600 shrink-0" />
-                <span>{cloudSynced ? 'DB Online Aktif' : 'Menyinkronkan...'}</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                disabled={syncingCloud}
-                onClick={() => void connectFirebaseCloud()}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-teal-300 bg-teal-50 text-xs font-semibold text-teal-800 hover:bg-teal-100 transition-colors whitespace-nowrap disabled:opacity-60"
-              >
-                <Cloud className="w-3.5 h-3.5" />
-                <span>{syncingCloud ? 'Menghubungkan...' : 'Hubungkan DB Online'}</span>
-              </button>
-            )}
 
             <div className="relative">
               <button
@@ -461,36 +427,6 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
           </div>
         </header>
 
-        {/* Cloud Firestore Online Sync Notice when logged in via Staff credentials without Google Cloud link */}
-        {!firebaseUser && !cloudBannerDismissed && (
-          <div className="bg-amber-50 border-b border-amber-200 px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs text-amber-950 no-print">
-            <div className="flex items-center gap-2 min-w-0">
-              <Cloud className="w-4 h-4 text-amber-700 shrink-0" />
-              <span>
-                <strong>Database Online Cloud Firestore belum terhubung.</strong> Hubungkan akun Google Firebase agar setiap tambah, ubah, dan hapus data tersimpan permanen di database online secara real-time.
-              </span>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                disabled={syncingCloud}
-                onClick={() => void connectFirebaseCloud()}
-                className="px-3 py-1.5 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 whitespace-nowrap disabled:opacity-60"
-              >
-                {syncingCloud ? 'Menghubungkan...' : 'Hubungkan Database Online'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setCloudBannerDismissed(true)}
-                aria-label="Tutup pemberitahuan sinkronisasi"
-                className="p-1 text-amber-700 hover:text-amber-950"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* Main Viewport */}
         <main className="flex-1 p-4 sm:p-6 max-w-[1600px] w-full mx-auto">{children}</main>
       </div>
@@ -556,30 +492,6 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-2">
-              {firebaseUser && currentUser?.role === 'SUPER_ADMIN' ? (
-                <button
-                  type="button"
-                  disabled={syncingCloud}
-                  onClick={() => {
-                    setE2eeModalOpen(false);
-                    void syncAllToFirestore();
-                  }}
-                  className="px-4 py-2 text-xs font-semibold rounded-lg border border-teal-600 text-teal-700 hover:bg-teal-50 whitespace-nowrap"
-                >
-                  Dorong Semua Data ke Cloud
-                </button>
-              ) : !firebaseUser ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setE2eeModalOpen(false);
-                    void connectFirebaseCloud();
-                  }}
-                  className="px-4 py-2 text-xs font-semibold rounded-lg border border-teal-600 text-teal-700 hover:bg-teal-50 whitespace-nowrap"
-                >
-                  Hubungkan Cloud Firestore
-                </button>
-              ) : null}
               <button
                 type="button"
                 onClick={() => setE2eeModalOpen(false)}

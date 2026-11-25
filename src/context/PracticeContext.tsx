@@ -188,6 +188,22 @@ async function commitBatchedOps(
   }
 }
 
+function formatFirebaseAuthError(err: unknown): string {
+  const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code?: unknown }).code || '') : '';
+  const msg = err instanceof Error ? err.message : String(err || '');
+  if (code === 'auth/unauthorized-domain' || msg.includes('auth/unauthorized-domain')) {
+    const host = typeof window !== 'undefined' ? window.location.hostname : 'domain aplikasi Anda';
+    return `Domain "${host}" belum terdaftar di Authorized Domains Firebase Authentication. Tambahkan "${host}" di Firebase Console → Authentication → Settings → Authorized domains agar koneksi otomatis database online berjalan di domain ini.`;
+  }
+  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+    return 'Jendela login Google ditutup sebelum proses autentikasi selesai.';
+  }
+  if (code === 'auth/popup-blocked') {
+    return 'Popup login Google diblokir oleh peramban. Izinkan popup untuk situs ini lalu coba lagi.';
+  }
+  return msg || 'Gagal menghubungkan autentikasi Google Firebase.';
+}
+
 export interface ToastMessage {
   id: string;
   type: 'success' | 'error' | 'info' | 'warning';
@@ -207,7 +223,6 @@ interface PracticeContextValue {
   firebaseUser: FirebaseUser | null;
   authMode: 'none' | 'staff' | 'firebase';
   cloudSynced: boolean;
-  syncingCloud: boolean;
   loading: boolean;
   e2eeUnlocked: boolean;
   e2eeFingerprint: string;
@@ -226,8 +241,6 @@ interface PracticeContextValue {
   setPrintPayload: (payload: PrintPayload | null) => void;
   loginStaff: (username: string, password: string) => Promise<void>;
   loginGoogleFirebase: () => Promise<void>;
-  connectFirebaseCloud: () => Promise<void>;
-  syncAllToFirestore: () => Promise<void>;
   logout: () => Promise<void>;
   upsertRecord: <K extends CollectionName>(col: K, item: PracticeDatabase[K][number]) => Promise<void>;
   deleteRecord: (col: CollectionName, id: string) => Promise<void>;
@@ -270,7 +283,6 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [authMode, setAuthMode] = useState<'none' | 'staff' | 'firebase'>('none');
   const [cloudSynced, setCloudSynced] = useState<boolean>(false);
-  const [syncingCloud, setSyncingCloud] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [e2eeUnlocked, setE2eeUnlocked] = useState<boolean>(false);
   const [e2eeFingerprint, setE2eeFingerprint] = useState<string>('');
@@ -615,20 +627,31 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setCurrentUser(user);
       setAuthMode('staff');
       setActiveView('dashboard');
+      let hydratedState: PracticeDatabase | undefined;
       if (data.initialState) {
         const decrypted = await decryptDatabaseState(data.initialState as PracticeDatabase, vaultKeyRef.current);
+        hydratedState = decrypted;
         setDbState(decrypted);
       } else {
         await fetchStaffStoreState();
       }
+      // Automatically link & seed Cloud Firestore if a Firebase Auth session is already active in this browser
+      if (auth.currentUser && user.role === 'SUPER_ADMIN') {
+        void ensureCloudBaselineSeeded(auth.currentUser, user, hydratedState || dbStateRef.current);
+      }
       notifyToast(`Selamat datang, ${user.displayName}. Vault E2EE terbuka.`, 'success');
     },
-    [decryptDatabaseState, fetchStaffStoreState, notifyToast]
+    [decryptDatabaseState, ensureCloudBaselineSeeded, fetchStaffStoreState, notifyToast]
   );
 
   const loginGoogleFirebase = useCallback(async () => {
-    const result = await signInWithGoogleFirebase();
-    const fbUser = result.user;
+    let fbUser: FirebaseUser;
+    try {
+      const result = await signInWithGoogleFirebase();
+      fbUser = result.user;
+    } catch (err) {
+      throw new Error(formatFirebaseAuthError(err));
+    }
     const profile = await resolveFirebaseStaffProfile(fbUser);
 
     const vault = await generateVaultKey();
@@ -646,108 +669,8 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setActiveView('dashboard');
     await ensureCloudBaselineSeeded(fbUser, fullProfile);
     await writeCloudAuditLog(fullProfile, 'LOGIN_FIREBASE', 'auth', fbUser.uid, undefined, `Login Google Cloud Firestore (${fbUser.email})`);
-    notifyToast(`Login Firebase berhasil sebagai ${fullProfile.displayName}. Database online aktif.`, 'success');
+    notifyToast(`Login berhasil sebagai ${fullProfile.displayName}. Database online tersinkron otomatis.`, 'success');
   }, [ensureCloudBaselineSeeded, notifyToast, resolveFirebaseStaffProfile, writeCloudAuditLog]);
-
-  const syncAllToFirestore = useCallback(async () => {
-    const fbUser = auth.currentUser;
-    if (!fbUser || !currentUser) {
-      notifyToast('Hubungkan akun Google Firebase terlebih dahulu untuk sinkronisasi database online.', 'warning');
-      return;
-    }
-    if (currentUser.role !== 'SUPER_ADMIN') {
-      notifyToast('Hanya Super Admin yang dapat melakukan sinkronisasi penuh ke Cloud Firestore.', 'error');
-      return;
-    }
-    setSyncingCloud(true);
-    try {
-      const snapshot = dbStateRef.current;
-      const nowIso = new Date().toISOString();
-      const ops: Array<{ type: 'set'; col: string; id: string; data: Record<string, unknown> }> = [];
-
-      for (const colName of ALL_COLLECTIONS) {
-        if (colName === 'audit_logs') continue;
-        const list = snapshot[colName] as unknown as Record<string, unknown>[];
-        if (!Array.isArray(list)) continue;
-        for (const rawItem of list) {
-          const docId = String(rawItem.id || '');
-          if (!docId || !/^[a-zA-Z0-9_\-]+$/.test(docId)) continue;
-          let itemToWrite: Record<string, unknown> = {
-            ...rawItem,
-            id: docId,
-            createdAt: String(rawItem.createdAt || nowIso),
-            createdBy: String(rawItem.createdBy || fbUser.uid),
-            updatedAt: String(rawItem.updatedAt || nowIso),
-            updatedBy: String(rawItem.updatedBy || fbUser.uid)
-          };
-          if (vaultKeyRef.current && e2eeFingerprint) {
-            if (colName === 'patients') {
-              itemToWrite = await encryptRecordFields(itemToWrite, PATIENT_SENSITIVE_FIELDS, vaultKeyRef.current, e2eeFingerprint);
-            } else if (colName === 'medical_records') {
-              itemToWrite = await encryptRecordFields(itemToWrite, RME_SENSITIVE_FIELDS, vaultKeyRef.current, e2eeFingerprint);
-            }
-          }
-          ops.push({ type: 'set', col: colName, id: docId, data: itemToWrite });
-
-          if (colName === 'users' && typeof rawItem.email === 'string' && rawItem.email.trim()) {
-            const emailLower = rawItem.email.trim().toLowerCase();
-            ops.push({
-              type: 'set',
-              col: 'staff_emails',
-              id: emailLower,
-              data: buildStaffEmailDoc(rawItem as unknown as UserAccount, fbUser.uid)
-            });
-          }
-        }
-      }
-
-      if (ops.length > 0) {
-        await commitBatchedOps(ops);
-      }
-      setCloudSynced(true);
-      await writeCloudAuditLog(currentUser, 'SYNC_ALL_FIRESTORE', 'system', 'cloud-sync', undefined, `${ops.length} dokumen disinkronkan ke Cloud Firestore`);
-      notifyToast(`Berhasil menyinkronkan ${ops.length} dokumen ke database online Cloud Firestore.`, 'success');
-    } catch (err) {
-      notifyToast('Gagal menyinkronkan sebagian data ke Cloud Firestore. Periksa hak akses akun Google Anda.', 'error');
-      handleFirestoreError(err, OperationType.WRITE, 'batch_sync');
-    } finally {
-      setSyncingCloud(false);
-    }
-  }, [currentUser, e2eeFingerprint, notifyToast, writeCloudAuditLog]);
-
-  const connectFirebaseCloud = useCallback(async () => {
-    setSyncingCloud(true);
-    try {
-      const result = await signInWithGoogleFirebase();
-      const fbUser = result.user;
-      setFirebaseUser(fbUser);
-
-      const profile = currentUser || (await resolveFirebaseStaffProfile(fbUser));
-      if (profile.role === 'SUPER_ADMIN') {
-        await ensureCloudBaselineSeeded(fbUser, profile, dbStateRef.current);
-      }
-
-      const existingPatients = await getDocs(query(collection(db, 'patients'), limit(1000)));
-      setCloudSynced(true);
-      notifyToast(
-        `Database Online Cloud Firestore terhubung (${fbUser.email}). ${existingPatients.size} data pasien online aktif & tersinkron real-time.`,
-        'success'
-      );
-    } catch (error) {
-      try {
-        handleFirestoreError(error, OperationType.WRITE, 'practice_settings/main');
-      } catch {
-        notifyToast(
-          error instanceof Error
-            ? error.message
-            : 'Gagal menghubungkan Cloud Firestore. Pastikan akun Google Anda terdaftar sebagai staf aktif.',
-          'error'
-        );
-      }
-    } finally {
-      setSyncingCloud(false);
-    }
-  }, [currentUser, ensureCloudBaselineSeeded, notifyToast, resolveFirebaseStaffProfile]);
 
   const logout = useCallback(async () => {
     if (authMode === 'staff' && bearerTokenRef.current) {
@@ -1414,7 +1337,6 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     firebaseUser,
     authMode,
     cloudSynced,
-    syncingCloud,
     loading,
     e2eeUnlocked,
     e2eeFingerprint,
@@ -1433,8 +1355,6 @@ export const PracticeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setPrintPayload,
     loginStaff,
     loginGoogleFirebase,
-    connectFirebaseCloud,
-    syncAllToFirestore,
     logout,
     upsertRecord,
     deleteRecord,
