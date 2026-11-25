@@ -1,19 +1,24 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Building2,
+  CalendarClock,
+  Check,
   Cloud,
   DatabaseBackup,
   Download,
-  KeyRound,
+  Edit3,
   Link2,
   Lock,
+  Pill,
   Plus,
+  RefreshCw,
   Save,
   ScrollText,
   Shield,
+  Sliders,
   Trash2,
   Upload,
-  UserPlus
+  UserPlus,
+  X
 } from 'lucide-react';
 import { usePractice } from '../context/PracticeContext';
 import type {
@@ -21,9 +26,15 @@ import type {
   DocumentTemplates,
   Icd10Code,
   IntegrationConfig,
+  Medicine,
+  PermissionDefinition,
+  PracticeScheduleSlot,
   PracticeSettings,
   RoleCode,
-  ServiceTariff
+  RoleDefinition,
+  ServiceTariff,
+  SystemSettings,
+  UserAccount
 } from '../types/models';
 import { DEFAULT_LOGO_PATH } from '../data/defaults';
 import { buildFhirPatientPreview, formatCurrencyIDR } from '../utils/obstetrics';
@@ -37,6 +48,16 @@ const HARD_LOCKED_ASSISTANT = [
   'cashier.refund_approve'
 ];
 const HARD_LOCKED_DOCTOR = ['cashier.operate', 'cashier.refund_approve'];
+const DAYS_OF_WEEK = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
+const SERVICE_CATEGORIES: ServiceTariff['category'][] = [
+  'Konsultasi',
+  'Obstetri',
+  'Ginekologi',
+  'USG',
+  'Tindakan',
+  'Laboratorium',
+  'Administrasi'
+];
 
 export const SettingsModule: React.FC = () => {
   const {
@@ -44,23 +65,55 @@ export const SettingsModule: React.FC = () => {
     dbState,
     currentUser,
     firebaseUser,
+    cloudSynced,
+    syncingCloud,
     practice,
     systemSettings,
     e2eeFingerprint,
     upsertRecord,
+    deleteRecord,
     createStaffAccount,
     updateStaffAccount,
+    deleteStaffAccount,
     loadDemoData,
     clearDemoData,
     restoreBackupData,
     connectFirebaseCloud,
+    syncAllToFirestore,
     notifyToast
   } = usePractice();
 
-  // Practice Profile form state
+  // Practice Profile & System Policy form state (synced with live Firestore snapshots)
   const [practiceForm, setPracticeForm] = useState<PracticeSettings>(practice);
+  const [systemForm, setSystemForm] = useState<SystemSettings>(systemSettings);
+  const [templatesForm, setTemplatesForm] = useState<DocumentTemplates>(systemSettings.templates);
 
-  // Tariff form state
+  useEffect(() => {
+    setPracticeForm(practice);
+  }, [practice]);
+
+  useEffect(() => {
+    setSystemForm(systemSettings);
+    setTemplatesForm(systemSettings.templates);
+  }, [systemSettings]);
+
+  // Schedule slot editor state (inside settings-practice)
+  const [newSlot, setNewSlot] = useState<PracticeScheduleSlot>({
+    dayOfWeek: 'Senin',
+    startTime: '09:00',
+    endTime: '14:00',
+    doctorId: 'usr-dokter',
+    doctorName: practice.doctorName ? `${practice.doctorName}, ${practice.doctorTitle}` : 'Dokter Sp.OG',
+    quota: 20,
+    active: true
+  });
+
+  // Tariffs / Medicines / ICD-10 tab state
+  const [catalogTab, setCatalogTab] = useState<'services' | 'medicines' | 'icd10'>('services');
+  const [catalogSearch, setCatalogSearch] = useState('');
+  const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
+
+  // Service Tariff Add & Edit state
   const [newTariff, setNewTariff] = useState({
     code: '',
     name: '',
@@ -69,7 +122,26 @@ export const SettingsModule: React.FC = () => {
     durationMinutes: 20,
     description: ''
   });
+  const [editingService, setEditingService] = useState<ServiceTariff | null>(null);
+
+  // Medicine Add & Edit state
+  const [newMed, setNewMed] = useState({
+    code: '',
+    name: '',
+    genericName: '',
+    brand: '',
+    dosageForm: 'Tablet',
+    strength: '',
+    unit: 'Tablet',
+    price: 5000,
+    stock: 100,
+    expiryDate: '2027-12-31'
+  });
+  const [editingMed, setEditingMed] = useState<Medicine | null>(null);
+
+  // ICD-10 Add & Edit state
   const [newIcd, setNewIcd] = useState({ code: '', name: '', category: 'Obstetri' });
+  const [editingIcd, setEditingIcd] = useState<Icd10Code | null>(null);
 
   // User CRUD form state
   const [newUser, setNewUser] = useState({
@@ -81,11 +153,25 @@ export const SettingsModule: React.FC = () => {
     strNumber: '',
     sipNumber: ''
   });
+  const [editingUser, setEditingUser] = useState<UserAccount | null>(null);
   const [resetTargetUserId, setResetTargetUserId] = useState<string | null>(null);
   const [resetPasswordValue, setResetPasswordValue] = useState('');
 
-  // Templates form state
-  const [templatesForm, setTemplatesForm] = useState<DocumentTemplates>(systemSettings.templates);
+  // Role & Custom Permission editor state
+  const [editingRole, setEditingRole] = useState<RoleDefinition | null>(null);
+  const [newPerm, setNewPerm] = useState({ key: '', module: 'Pengaturan', label: '' });
+
+  // Integration Add & Edit state
+  const [editingIntegration, setEditingIntegration] = useState<IntegrationConfig | null>(null);
+  const [newIntegration, setNewIntegration] = useState({
+    name: '',
+    provider: 'CUSTOM_API',
+    endpointUrl: '',
+    organizationId: '',
+    clientId: '',
+    senderNumber: '',
+    statusNote: ''
+  });
 
   // Audit Log filters
   const [auditSearch, setAuditSearch] = useState('');
@@ -97,6 +183,19 @@ export const SettingsModule: React.FC = () => {
       dbState.visits.filter((v) => v.isDemo).length,
     [dbState.patients, dbState.visits]
   );
+
+  const mergedPermissions = useMemo(() => {
+    const byKey = new Map<string, { id?: string; key: string; module: string; label: string; isCustom: boolean }>();
+    for (const p of PERMISSION_CATALOG) {
+      byKey.set(p.key, { key: p.key, module: p.module, label: p.label, isCustom: false });
+    }
+    for (const p of dbState.permissions) {
+      if (!byKey.has(p.key)) {
+        byKey.set(p.key, { id: p.id, key: p.key, module: p.module, label: p.label, isCustom: true });
+      }
+    }
+    return Array.from(byKey.values());
+  }, [dbState.permissions]);
 
   if (!currentUser || currentUser.role !== 'SUPER_ADMIN') {
     return (
@@ -110,7 +209,7 @@ export const SettingsModule: React.FC = () => {
     );
   }
 
-  // ==================== VIEW: PRACTICE IDENTITY ====================
+  // ==================== VIEW: PRACTICE IDENTITY, SYSTEM POLICY & SCHEDULE SLOTS ====================
   if (activeView === 'settings-practice') {
     const handleLogoFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -128,30 +227,55 @@ export const SettingsModule: React.FC = () => {
       reader.readAsDataURL(file);
     };
 
-    const handleSavePractice = async (e: React.FormEvent) => {
+    const handleSavePracticeAndSystem = async (e: React.FormEvent) => {
       e.preventDefault();
       await upsertRecord('practice_settings', { ...practiceForm, id: practice.id || 'main' });
-      notifyToast('Identitas praktik, penomoran otomatis, dan profil dokter berhasil diperbarui.', 'success');
+      await upsertRecord('system_settings', {
+        ...systemSettings,
+        ...systemForm,
+        id: systemSettings.id || 'main',
+        templates: systemSettings.templates
+      });
+      notifyToast('Identitas praktik, penomoran otomatis, kebijakan sistem, dan jadwal berhasil disimpan.', 'success');
+    };
+
+    const handleAddSlot = () => {
+      if (!newSlot.startTime || !newSlot.endTime) return;
+      const nextSlots = [...(systemForm.scheduleSlots || []), { ...newSlot }];
+      setSystemForm((prev) => ({ ...prev, scheduleSlots: nextSlots }));
+    };
+
+    const handleUpdateSlot = (index: number, patch: Partial<PracticeScheduleSlot>) => {
+      const nextSlots = (systemForm.scheduleSlots || []).map((slot, idx) =>
+        idx === index ? { ...slot, ...patch } : slot
+      );
+      setSystemForm((prev) => ({ ...prev, scheduleSlots: nextSlots }));
+    };
+
+    const handleDeleteSlot = (index: number) => {
+      const nextSlots = (systemForm.scheduleSlots || []).filter((_, idx) => idx !== index);
+      setSystemForm((prev) => ({ ...prev, scheduleSlots: nextSlots }));
     };
 
     return (
-      <form onSubmit={handleSavePractice} className="space-y-6 max-w-4xl">
+      <form onSubmit={handleSavePracticeAndSystem} className="space-y-6 max-w-5xl">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-xl font-bold text-slate-900">Identitas Praktik &amp; Format Penomoran</h1>
+            <h1 className="text-xl font-bold text-slate-900">Identitas Praktik, Penomoran &amp; Variabel Sistem</h1>
             <p className="text-sm text-slate-500">
-              Ubah nama aplikasi/klinik, profil Dokter Sp.OG, alamat, logo resmi kop surat, dan format penomoran otomatis.
+              Super Admin dapat mengubah seluruh identitas klinik, profil dokter, prefix nomor otomatis, kebijakan keamanan, dan slot jadwal praktik.
             </p>
           </div>
           <button
             type="submit"
-            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 whitespace-nowrap"
+            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 whitespace-nowrap shrink-0"
           >
             <Save className="w-3.5 h-3.5" />
-            Simpan Perubahan
+            Simpan Semua Variabel
           </button>
         </div>
 
+        {/* Section 1: Practice Identity */}
         <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-5">
           <div className="flex flex-wrap items-center gap-5 pb-5 border-b border-slate-100">
             <img
@@ -162,7 +286,7 @@ export const SettingsModule: React.FC = () => {
             <div className="space-y-1.5">
               <p className="text-xs font-semibold text-slate-800">Logo Resmi Praktik (Kop Surat &amp; Sidebar)</p>
               <div className="flex flex-wrap items-center gap-2">
-                <label className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer">
+                <label className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer whitespace-nowrap">
                   Unggah Logo Baru
                   <input type="file" accept="image/*" onChange={handleLogoFileUpload} className="hidden" />
                 </label>
@@ -341,12 +465,273 @@ export const SettingsModule: React.FC = () => {
             </div>
           </div>
         </div>
+
+        {/* Section 2: System & Security Policy Variables */}
+        <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+          <div className="flex items-center gap-2">
+            <Sliders className="w-4 h-4 text-teal-700" />
+            <h2 className="text-sm font-bold text-slate-900">Variabel Kebijakan Sistem &amp; Keamanan</h2>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Minimal Panjang Password</label>
+              <input
+                type="number"
+                min={6}
+                max={32}
+                value={systemForm.passwordMinLength}
+                onChange={(e) => setSystemForm({ ...systemForm, passwordMinLength: Number(e.target.value) })}
+                className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono tabular-nums"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Timeout Sesi (Menit)</label>
+              <input
+                type="number"
+                min={10}
+                max={480}
+                value={systemForm.sessionTimeoutMinutes}
+                onChange={(e) => setSystemForm({ ...systemForm, sessionTimeoutMinutes: Number(e.target.value) })}
+                className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono tabular-nums"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Maks. Percobaan Login</label>
+              <input
+                type="number"
+                min={3}
+                max={20}
+                value={systemForm.maxLoginAttempts}
+                onChange={(e) => setSystemForm({ ...systemForm, maxLoginAttempts: Number(e.target.value) })}
+                className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono tabular-nums"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Masa Retensi Data (Tahun)</label>
+              <input
+                type="number"
+                min={1}
+                max={50}
+                value={systemForm.dataRetentionYears}
+                onChange={(e) => setSystemForm({ ...systemForm, dataRetentionYears: Number(e.target.value) })}
+                className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono tabular-nums"
+              />
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-6 pt-2">
+            <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={systemForm.autoBackupEnabled}
+                onChange={(e) => setSystemForm({ ...systemForm, autoBackupEnabled: e.target.checked })}
+                className="w-4 h-4 accent-teal-700"
+              />
+              Aktifkan Kebijakan Backup Terjadwal Otomatis
+            </label>
+            <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={systemForm.e2eeRequired}
+                onChange={(e) => setSystemForm({ ...systemForm, e2eeRequired: e.target.checked })}
+                className="w-4 h-4 accent-teal-700"
+              />
+              Wajibkan Enkripsi E2EE (AES-256-GCM) untuk PII &amp; Catatan Medis
+            </label>
+          </div>
+        </div>
+
+        {/* Section 3: Practice Schedule Slots Variable Manager */}
+        <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <CalendarClock className="w-4 h-4 text-teal-700" />
+              <h2 className="text-sm font-bold text-slate-900">
+                Variabel Slot Jadwal Praktik ({(systemForm.scheduleSlots || []).length})
+              </h2>
+            </div>
+            <span className="text-[11px] text-slate-500">Klik &ldquo;Simpan Semua Variabel&rdquo; di atas untuk menyimpan ke database online.</span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-6 gap-2.5 items-end bg-slate-50 p-3.5 rounded-lg border border-slate-200">
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Hari</label>
+              <select
+                value={newSlot.dayOfWeek}
+                onChange={(e) => setNewSlot({ ...newSlot, dayOfWeek: e.target.value })}
+                className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-lg"
+              >
+                {DAYS_OF_WEEK.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Mulai</label>
+              <input
+                type="time"
+                value={newSlot.startTime}
+                onChange={(e) => setNewSlot({ ...newSlot, startTime: e.target.value })}
+                className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-lg font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Selesai</label>
+              <input
+                type="time"
+                value={newSlot.endTime}
+                onChange={(e) => setNewSlot({ ...newSlot, endTime: e.target.value })}
+                className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-lg font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Dokter</label>
+              <input
+                type="text"
+                value={newSlot.doctorName}
+                onChange={(e) => setNewSlot({ ...newSlot, doctorName: e.target.value })}
+                className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-lg"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Kuota</label>
+              <input
+                type="number"
+                min={1}
+                max={200}
+                value={newSlot.quota}
+                onChange={(e) => setNewSlot({ ...newSlot, quota: Number(e.target.value) })}
+                className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-lg font-mono tabular-nums"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleAddSlot}
+              className="inline-flex items-center justify-center gap-1 py-1.5 px-3 rounded-lg bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 whitespace-nowrap"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Tambah Slot
+            </button>
+          </div>
+
+          <div className="overflow-x-auto border border-slate-200 rounded-lg">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                <tr>
+                  <th className="px-3 py-2 text-left font-semibold">Hari</th>
+                  <th className="px-3 py-2 text-left font-semibold">Jam Praktik</th>
+                  <th className="px-3 py-2 text-left font-semibold">Dokter</th>
+                  <th className="px-3 py-2 text-right font-semibold">Kuota</th>
+                  <th className="px-3 py-2 text-center font-semibold">Aktif</th>
+                  <th className="px-3 py-2 text-right font-semibold">Aksi</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {(systemForm.scheduleSlots || []).map((slot, idx) => (
+                  <tr key={`${slot.dayOfWeek}-${slot.startTime}-${idx}`}>
+                    <td className="px-3 py-2">
+                      <select
+                        value={slot.dayOfWeek}
+                        onChange={(e) => handleUpdateSlot(idx, { dayOfWeek: e.target.value })}
+                        className="px-2 py-1 text-xs border border-slate-200 rounded bg-white"
+                      >
+                        {DAYS_OF_WEEK.map((d) => (
+                          <option key={d} value={d}>
+                            {d}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="time"
+                          value={slot.startTime}
+                          onChange={(e) => handleUpdateSlot(idx, { startTime: e.target.value })}
+                          className="px-2 py-1 text-xs border border-slate-200 rounded font-mono"
+                        />
+                        <span>-</span>
+                        <input
+                          type="time"
+                          value={slot.endTime}
+                          onChange={(e) => handleUpdateSlot(idx, { endTime: e.target.value })}
+                          className="px-2 py-1 text-xs border border-slate-200 rounded font-mono"
+                        />
+                      </div>
+                    </td>
+                    <td className="px-3 py-2">
+                      <input
+                        type="text"
+                        value={slot.doctorName}
+                        onChange={(e) => handleUpdateSlot(idx, { doctorName: e.target.value })}
+                        className="w-full min-w-[160px] px-2 py-1 text-xs border border-slate-200 rounded"
+                      />
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <input
+                        type="number"
+                        min={1}
+                        max={200}
+                        value={slot.quota}
+                        onChange={(e) => handleUpdateSlot(idx, { quota: Number(e.target.value) })}
+                        className="w-16 px-2 py-1 text-xs border border-slate-200 rounded text-right font-mono tabular-nums"
+                      />
+                    </td>
+                    <td className="px-3 py-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={slot.active}
+                        onChange={(e) => handleUpdateSlot(idx, { active: e.target.checked })}
+                        className="w-4 h-4 accent-teal-700"
+                      />
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteSlot(idx)}
+                        className="text-red-600 hover:text-red-800 font-semibold"
+                      >
+                        Hapus
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </form>
     );
   }
 
-  // ==================== VIEW: TARIFFS & ICD-10 ====================
+  // ==================== VIEW: TARIFFS, MEDICINES & ICD-10 MASTER DATA ====================
   if (activeView === 'settings-tariffs') {
+    const q = catalogSearch.trim().toLowerCase();
+
+    const filteredServices = dbState.services.filter(
+      (s) =>
+        !q ||
+        s.code.toLowerCase().includes(q) ||
+        s.name.toLowerCase().includes(q) ||
+        s.category.toLowerCase().includes(q)
+    );
+    const filteredMeds = dbState.medicines.filter(
+      (m) =>
+        !q ||
+        m.code.toLowerCase().includes(q) ||
+        m.name.toLowerCase().includes(q) ||
+        m.genericName.toLowerCase().includes(q) ||
+        m.brand.toLowerCase().includes(q)
+    );
+    const filteredIcds = dbState.icd10_codes.filter(
+      (i) =>
+        !q ||
+        i.code.toLowerCase().includes(q) ||
+        i.name.toLowerCase().includes(q) ||
+        i.category.toLowerCase().includes(q)
+    );
+
     const handleAddTariff = async (e: React.FormEvent) => {
       e.preventDefault();
       if (!newTariff.code.trim() || !newTariff.name.trim()) {
@@ -370,18 +755,96 @@ export const SettingsModule: React.FC = () => {
       };
       await upsertRecord('services', item);
       setNewTariff({ code: '', name: '', category: 'Konsultasi', price: 250000, durationMinutes: 20, description: '' });
-      notifyToast('Tarif pelayanan ditambahkan.', 'success');
+      notifyToast('Tarif pelayanan ditambahkan dan disimpan online.', 'success');
+    };
+
+    const handleSaveEditService = async () => {
+      if (!editingService) return;
+      if (!editingService.code.trim() || !editingService.name.trim()) {
+        notifyToast('Kode dan nama layanan wajib diisi.', 'error');
+        return;
+      }
+      await upsertRecord('services', {
+        ...editingService,
+        code: editingService.code.trim().toUpperCase(),
+        name: editingService.name.trim(),
+        price: Math.max(0, Number(editingService.price)),
+        durationMinutes: Math.max(5, Number(editingService.durationMinutes))
+      });
+      setEditingService(null);
+      notifyToast('Tarif pelayanan diperbarui.', 'success');
+    };
+
+    const handleAddMed = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!newMed.code.trim() || !newMed.name.trim()) {
+        notifyToast('Kode dan nama obat wajib diisi.', 'error');
+        return;
+      }
+      const nowIso = new Date().toISOString();
+      const item: Medicine = {
+        id: `med-${Date.now()}`,
+        code: newMed.code.trim().toUpperCase(),
+        name: newMed.name.trim(),
+        genericName: newMed.genericName.trim() || newMed.name.trim(),
+        brand: newMed.brand.trim() || 'Generik',
+        dosageForm: newMed.dosageForm.trim() || 'Tablet',
+        strength: newMed.strength.trim() || '-',
+        unit: newMed.unit.trim() || 'Tablet',
+        price: Math.max(0, Number(newMed.price)),
+        stock: Math.max(0, Number(newMed.stock)),
+        expiryDate: newMed.expiryDate || '2027-12-31',
+        active: true,
+        createdAt: nowIso,
+        createdBy: currentUser.id,
+        updatedAt: nowIso,
+        updatedBy: currentUser.id
+      };
+      await upsertRecord('medicines', item);
+      setNewMed({
+        code: '',
+        name: '',
+        genericName: '',
+        brand: '',
+        dosageForm: 'Tablet',
+        strength: '',
+        unit: 'Tablet',
+        price: 5000,
+        stock: 100,
+        expiryDate: '2027-12-31'
+      });
+      notifyToast('Master obat berhasil ditambahkan dan disimpan online.', 'success');
+    };
+
+    const handleSaveEditMed = async () => {
+      if (!editingMed) return;
+      if (!editingMed.code.trim() || !editingMed.name.trim()) {
+        notifyToast('Kode dan nama obat wajib diisi.', 'error');
+        return;
+      }
+      await upsertRecord('medicines', {
+        ...editingMed,
+        code: editingMed.code.trim().toUpperCase(),
+        name: editingMed.name.trim(),
+        price: Math.max(0, Number(editingMed.price)),
+        stock: Math.max(0, Number(editingMed.stock))
+      });
+      setEditingMed(null);
+      notifyToast('Data master obat diperbarui.', 'success');
     };
 
     const handleAddIcd = async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!newIcd.code.trim() || !newIcd.name.trim()) return;
+      if (!newIcd.code.trim() || !newIcd.name.trim()) {
+        notifyToast('Kode dan nama diagnosis ICD-10 wajib diisi.', 'error');
+        return;
+      }
       const nowIso = new Date().toISOString();
       const item: Icd10Code = {
         id: `icd-${Date.now()}`,
         code: newIcd.code.trim().toUpperCase(),
         name: newIcd.name.trim(),
-        category: newIcd.category,
+        category: newIcd.category.trim() || 'Obstetri',
         active: true,
         createdAt: nowIso,
         createdBy: currentUser.id,
@@ -390,150 +853,844 @@ export const SettingsModule: React.FC = () => {
       };
       await upsertRecord('icd10_codes', item);
       setNewIcd({ code: '', name: '', category: 'Obstetri' });
-      notifyToast('Kode ICD-10 ditambahkan.', 'success');
+      notifyToast('Kode ICD-10 ditambahkan dan disimpan online.', 'success');
+    };
+
+    const handleSaveEditIcd = async () => {
+      if (!editingIcd) return;
+      if (!editingIcd.code.trim() || !editingIcd.name.trim()) {
+        notifyToast('Kode dan deskripsi ICD-10 wajib diisi.', 'error');
+        return;
+      }
+      await upsertRecord('icd10_codes', {
+        ...editingIcd,
+        code: editingIcd.code.trim().toUpperCase(),
+        name: editingIcd.name.trim()
+      });
+      setEditingIcd(null);
+      notifyToast('Kode ICD-10 diperbarui.', 'success');
     };
 
     return (
       <div className="space-y-6">
-        <div>
-          <h1 className="text-xl font-bold text-slate-900">Manajemen Tarif Pelayanan &amp; Master ICD-10</h1>
-          <p className="text-sm text-slate-500">Atur tarif konsultasi, USG, tindakan obstetri-ginekologi, dan katalog diagnosis ICD-10.</p>
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h1 className="text-xl font-bold text-slate-900">Master Tarif Pelayanan, Obat &amp; Kode ICD-10</h1>
+            <p className="text-sm text-slate-500">
+              Tambah, edit, aktifkan/nonaktifkan, dan hapus seluruh variabel layanan, farmasi, dan katalog diagnosis ICD-10.
+            </p>
+          </div>
+          <input
+            type="search"
+            value={catalogSearch}
+            onChange={(e) => setCatalogSearch(e.target.value)}
+            placeholder="Cari kode atau nama..."
+            className="px-3 py-2 text-xs bg-white border border-slate-200 rounded-lg w-60"
+          />
         </div>
 
-        <form
-          onSubmit={handleAddTariff}
-          className="bg-white border border-slate-200 rounded-xl p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3 items-end"
-        >
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">Kode</label>
-            <input
-              type="text"
-              value={newTariff.code}
-              onChange={(e) => setNewTariff({ ...newTariff, code: e.target.value })}
-              placeholder="USG-4D"
-              className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono"
-            />
-          </div>
-          <div className="lg:col-span-2">
-            <label className="block text-xs font-semibold text-slate-700 mb-1">Nama Layanan</label>
-            <input
-              type="text"
-              value={newTariff.name}
-              onChange={(e) => setNewTariff({ ...newTariff, name: e.target.value })}
-              placeholder="USG Fetomaternal 4D + Print"
-              className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">Kategori</label>
-            <select
-              value={newTariff.category}
-              onChange={(e) => setNewTariff({ ...newTariff, category: e.target.value as ServiceTariff['category'] })}
-              className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg bg-white"
-            >
-              {['Konsultasi', 'Obstetri', 'Ginekologi', 'USG', 'Tindakan', 'Laboratorium', 'Administrasi'].map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">Tarif (Rp)</label>
-            <input
-              type="number"
-              min={0}
-              value={newTariff.price}
-              onChange={(e) => setNewTariff({ ...newTariff, price: Number(e.target.value) })}
-              className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono tabular-nums"
-            />
-          </div>
+        {/* Sub-Tabs */}
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-3">
           <button
-            type="submit"
-            className="inline-flex items-center justify-center gap-1.5 py-2 px-4 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 whitespace-nowrap"
+            type="button"
+            onClick={() => setCatalogTab('services')}
+            className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+              catalogTab === 'services'
+                ? 'bg-teal-700 text-white'
+                : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
+            }`}
           >
-            <Plus className="w-3.5 h-3.5" />
-            Tambah Tarif
+            Tarif Pelayanan ({dbState.services.length})
           </button>
-        </form>
-
-        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-          <table className="w-full text-xs">
-            <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
-              <tr>
-                <th className="px-4 py-3 text-left font-semibold">Kode</th>
-                <th className="px-4 py-3 text-left font-semibold">Nama Layanan</th>
-                <th className="px-4 py-3 text-left font-semibold">Kategori</th>
-                <th className="px-4 py-3 text-right font-semibold">Tarif</th>
-                <th className="px-4 py-3 text-left font-semibold">Status</th>
-                <th className="px-4 py-3 text-right font-semibold">Aksi</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {dbState.services.map((s) => (
-                <tr key={s.id}>
-                  <td className="px-4 py-3 font-mono font-semibold text-teal-800">{s.code}</td>
-                  <td className="px-4 py-3 font-medium text-slate-900">{s.name}</td>
-                  <td className="px-4 py-3 text-slate-600">{s.category}</td>
-                  <td className="px-4 py-3 text-right font-mono tabular-nums font-semibold">
-                    {formatCurrencyIDR(s.price)}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={s.active ? 'text-emerald-700 font-semibold' : 'text-slate-400'}>
-                      {s.active ? 'Aktif' : 'Nonaktif'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <button
-                      type="button"
-                      onClick={() => upsertRecord('services', { ...s, active: !s.active })}
-                      className="text-xs font-semibold text-teal-700 hover:text-teal-900"
-                    >
-                      {s.active ? 'Nonaktifkan' : 'Aktifkan'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <button
+            type="button"
+            onClick={() => setCatalogTab('medicines')}
+            className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+              catalogTab === 'medicines'
+                ? 'bg-teal-700 text-white'
+                : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            <Pill className="w-3.5 h-3.5" />
+            Master Obat ({dbState.medicines.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setCatalogTab('icd10')}
+            className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+              catalogTab === 'icd10'
+                ? 'bg-teal-700 text-white'
+                : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            Master ICD-10 ({dbState.icd10_codes.length})
+          </button>
         </div>
 
-        {/* ICD-10 Mini Manager */}
-        <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
-          <h2 className="text-sm font-bold text-slate-900">Master Kode ICD-10 OBGYN ({dbState.icd10_codes.length})</h2>
-          <form onSubmit={handleAddIcd} className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-            <input
-              type="text"
-              value={newIcd.code}
-              onChange={(e) => setNewIcd({ ...newIcd, code: e.target.value })}
-              placeholder="Kode (mis. O14.1)"
-              className="px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono"
-            />
-            <input
-              type="text"
-              value={newIcd.name}
-              onChange={(e) => setNewIcd({ ...newIcd, name: e.target.value })}
-              placeholder="Deskripsi diagnosis ICD-10"
-              className="sm:col-span-2 px-3 py-2 text-xs border border-slate-200 rounded-lg"
-            />
-            <button
-              type="submit"
-              className="px-4 py-2 rounded-lg bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 whitespace-nowrap"
+        {/* TAB 1: SERVICES / TARIFFS */}
+        {catalogTab === 'services' && (
+          <div className="space-y-4">
+            <form
+              onSubmit={handleAddTariff}
+              className="bg-white border border-slate-200 rounded-xl p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-3 items-end"
             >
-              Tambah ICD-10
-            </button>
-          </form>
-        </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Kode</label>
+                <input
+                  type="text"
+                  value={newTariff.code}
+                  onChange={(e) => setNewTariff({ ...newTariff, code: e.target.value })}
+                  placeholder="USG-4D"
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono"
+                />
+              </div>
+              <div className="lg:col-span-2">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Nama Layanan</label>
+                <input
+                  type="text"
+                  value={newTariff.name}
+                  onChange={(e) => setNewTariff({ ...newTariff, name: e.target.value })}
+                  placeholder="USG Fetomaternal 4D + Print"
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Kategori</label>
+                <select
+                  value={newTariff.category}
+                  onChange={(e) => setNewTariff({ ...newTariff, category: e.target.value as ServiceTariff['category'] })}
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg bg-white"
+                >
+                  {SERVICE_CATEGORIES.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Tarif (Rp)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={newTariff.price}
+                  onChange={(e) => setNewTariff({ ...newTariff, price: Number(e.target.value) })}
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono tabular-nums"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Durasi (Mnt)</label>
+                <input
+                  type="number"
+                  min={5}
+                  value={newTariff.durationMinutes}
+                  onChange={(e) => setNewTariff({ ...newTariff, durationMinutes: Number(e.target.value) })}
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono tabular-nums"
+                />
+              </div>
+              <button
+                type="submit"
+                className="inline-flex items-center justify-center gap-1.5 py-2 px-4 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 whitespace-nowrap"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Tambah Tarif
+              </button>
+            </form>
+
+            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                    <tr>
+                      <th className="px-4 py-3 text-left font-semibold">Kode</th>
+                      <th className="px-4 py-3 text-left font-semibold">Nama Layanan &amp; Keterangan</th>
+                      <th className="px-4 py-3 text-left font-semibold">Kategori</th>
+                      <th className="px-4 py-3 text-right font-semibold">Tarif</th>
+                      <th className="px-4 py-3 text-right font-semibold">Durasi</th>
+                      <th className="px-4 py-3 text-left font-semibold">Status</th>
+                      <th className="px-4 py-3 text-right font-semibold">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredServices.map((s) => {
+                      const isEditing = editingService?.id === s.id;
+                      const deleteKey = `srv:${s.id}`;
+                      return (
+                        <tr key={s.id} className={isEditing ? 'bg-teal-50/40' : ''}>
+                          <td className="px-4 py-3 font-mono font-semibold text-teal-800">
+                            {isEditing ? (
+                              <input
+                                type="text"
+                                value={editingService.code}
+                                onChange={(e) => setEditingService({ ...editingService, code: e.target.value })}
+                                className="w-24 px-2 py-1 border border-slate-300 rounded font-mono bg-white"
+                              />
+                            ) : (
+                              s.code
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            {isEditing ? (
+                              <div className="space-y-1">
+                                <input
+                                  type="text"
+                                  value={editingService.name}
+                                  onChange={(e) => setEditingService({ ...editingService, name: e.target.value })}
+                                  className="w-full px-2 py-1 border border-slate-300 rounded bg-white"
+                                />
+                                <input
+                                  type="text"
+                                  value={editingService.description}
+                                  onChange={(e) => setEditingService({ ...editingService, description: e.target.value })}
+                                  placeholder="Deskripsi layanan"
+                                  className="w-full px-2 py-1 border border-slate-200 rounded text-[11px] bg-white"
+                                />
+                              </div>
+                            ) : (
+                              <div>
+                                <p className="font-medium text-slate-900">{s.name}</p>
+                                {s.description && <p className="text-[11px] text-slate-500">{s.description}</p>}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-slate-600">
+                            {isEditing ? (
+                              <select
+                                value={editingService.category}
+                                onChange={(e) =>
+                                  setEditingService({ ...editingService, category: e.target.value as ServiceTariff['category'] })
+                                }
+                                className="px-2 py-1 border border-slate-300 rounded bg-white"
+                              >
+                                {SERVICE_CATEGORIES.map((c) => (
+                                  <option key={c} value={c}>
+                                    {c}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              s.category
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono tabular-nums font-semibold">
+                            {isEditing ? (
+                              <input
+                                type="number"
+                                min={0}
+                                value={editingService.price}
+                                onChange={(e) => setEditingService({ ...editingService, price: Number(e.target.value) })}
+                                className="w-28 px-2 py-1 border border-slate-300 rounded text-right bg-white"
+                              />
+                            ) : (
+                              formatCurrencyIDR(s.price)
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono tabular-nums text-slate-600">
+                            {isEditing ? (
+                              <input
+                                type="number"
+                                min={5}
+                                value={editingService.durationMinutes}
+                                onChange={(e) =>
+                                  setEditingService({ ...editingService, durationMinutes: Number(e.target.value) })
+                                }
+                                className="w-16 px-2 py-1 border border-slate-300 rounded text-right bg-white"
+                              />
+                            ) : (
+                              `${s.durationMinutes} mnt`
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={s.active ? 'text-emerald-700 font-semibold' : 'text-slate-400'}>
+                              {s.active ? 'Aktif' : 'Nonaktif'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right whitespace-nowrap space-x-2.5">
+                            {isEditing ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleSaveEditService()}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-teal-700 text-white font-semibold hover:bg-teal-800"
+                                >
+                                  <Check className="w-3 h-3" />
+                                  Simpan
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingService(null)}
+                                  className="px-2 py-1 rounded border border-slate-300 text-slate-600 hover:bg-white"
+                                >
+                                  Batal
+                                </button>
+                              </>
+                            ) : confirmDeleteKey === deleteKey ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await deleteRecord('services', s.id);
+                                    setConfirmDeleteKey(null);
+                                    notifyToast(`Tarif ${s.name} dihapus.`, 'info');
+                                  }}
+                                  className="px-2 py-1 rounded bg-red-600 text-white font-semibold hover:bg-red-700"
+                                >
+                                  Ya, Hapus
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteKey(null)}
+                                  className="text-slate-600 hover:text-slate-900"
+                                >
+                                  Batal
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingService({ ...s })}
+                                  className="text-teal-700 hover:text-teal-900 font-semibold"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void upsertRecord('services', { ...s, active: !s.active })}
+                                  className="text-slate-600 hover:text-slate-900 font-semibold"
+                                >
+                                  {s.active ? 'Nonaktifkan' : 'Aktifkan'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteKey(deleteKey)}
+                                  className="text-red-600 hover:text-red-800 font-semibold"
+                                >
+                                  Hapus
+                                </button>
+                              </>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 2: MEDICINES MASTER */}
+        {catalogTab === 'medicines' && (
+          <div className="space-y-4">
+            <form
+              onSubmit={handleAddMed}
+              className="bg-white border border-slate-200 rounded-xl p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end"
+            >
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Kode Obat</label>
+                <input
+                  type="text"
+                  required
+                  value={newMed.code}
+                  onChange={(e) => setNewMed({ ...newMed, code: e.target.value })}
+                  placeholder="OBT-011"
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Nama Obat</label>
+                <input
+                  type="text"
+                  required
+                  value={newMed.name}
+                  onChange={(e) => setNewMed({ ...newMed, name: e.target.value })}
+                  placeholder="Asam Folat 400mcg"
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Zat Aktif / Generik</label>
+                <input
+                  type="text"
+                  value={newMed.genericName}
+                  onChange={(e) => setNewMed({ ...newMed, genericName: e.target.value })}
+                  placeholder="Folic Acid"
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Merek / Pabrikan</label>
+                <input
+                  type="text"
+                  value={newMed.brand}
+                  onChange={(e) => setNewMed({ ...newMed, brand: e.target.value })}
+                  placeholder="Generik / Dexa"
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Bentuk &amp; Kekuatan</label>
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    value={newMed.dosageForm}
+                    onChange={(e) => setNewMed({ ...newMed, dosageForm: e.target.value })}
+                    placeholder="Tablet"
+                    className="w-1/2 px-2.5 py-2 text-xs border border-slate-200 rounded-lg"
+                  />
+                  <input
+                    type="text"
+                    value={newMed.strength}
+                    onChange={(e) => setNewMed({ ...newMed, strength: e.target.value })}
+                    placeholder="500 mg"
+                    className="w-1/2 px-2.5 py-2 text-xs border border-slate-200 rounded-lg"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Satuan</label>
+                <input
+                  type="text"
+                  value={newMed.unit}
+                  onChange={(e) => setNewMed({ ...newMed, unit: e.target.value })}
+                  placeholder="Tablet / Kapsul"
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Harga (Rp)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={newMed.price}
+                  onChange={(e) => setNewMed({ ...newMed, price: Number(e.target.value) })}
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono tabular-nums"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Stok</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={newMed.stock}
+                  onChange={(e) => setNewMed({ ...newMed, stock: Number(e.target.value) })}
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono tabular-nums"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Kedaluwarsa</label>
+                <input
+                  type="date"
+                  value={newMed.expiryDate}
+                  onChange={(e) => setNewMed({ ...newMed, expiryDate: e.target.value })}
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono"
+                />
+              </div>
+              <button
+                type="submit"
+                className="inline-flex items-center justify-center gap-1.5 py-2 px-4 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 whitespace-nowrap"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Tambah Obat
+              </button>
+            </form>
+
+            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                    <tr>
+                      <th className="px-4 py-3 text-left font-semibold">Kode</th>
+                      <th className="px-4 py-3 text-left font-semibold">Nama Obat &amp; Generik</th>
+                      <th className="px-4 py-3 text-left font-semibold">Sediaan</th>
+                      <th className="px-4 py-3 text-right font-semibold">Harga</th>
+                      <th className="px-4 py-3 text-right font-semibold">Stok</th>
+                      <th className="px-4 py-3 text-left font-semibold">ED</th>
+                      <th className="px-4 py-3 text-left font-semibold">Status</th>
+                      <th className="px-4 py-3 text-right font-semibold">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredMeds.map((m) => {
+                      const isEditing = editingMed?.id === m.id;
+                      const deleteKey = `med:${m.id}`;
+                      return (
+                        <tr key={m.id} className={isEditing ? 'bg-teal-50/40' : ''}>
+                          <td className="px-4 py-3 font-mono font-semibold text-teal-800">
+                            {isEditing ? (
+                              <input
+                                type="text"
+                                value={editingMed.code}
+                                onChange={(e) => setEditingMed({ ...editingMed, code: e.target.value })}
+                                className="w-24 px-2 py-1 border border-slate-300 rounded font-mono bg-white"
+                              />
+                            ) : (
+                              m.code
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            {isEditing ? (
+                              <div className="space-y-1">
+                                <input
+                                  type="text"
+                                  value={editingMed.name}
+                                  onChange={(e) => setEditingMed({ ...editingMed, name: e.target.value })}
+                                  className="w-full px-2 py-1 border border-slate-300 rounded bg-white"
+                                />
+                                <input
+                                  type="text"
+                                  value={editingMed.genericName}
+                                  onChange={(e) => setEditingMed({ ...editingMed, genericName: e.target.value })}
+                                  placeholder="Generik"
+                                  className="w-full px-2 py-1 border border-slate-200 rounded text-[11px] bg-white"
+                                />
+                              </div>
+                            ) : (
+                              <div>
+                                <p className="font-medium text-slate-900">{m.name}</p>
+                                <p className="text-[11px] text-slate-500">
+                                  {m.genericName} · {m.brand}
+                                </p>
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-slate-600">
+                            {isEditing ? (
+                              <div className="flex gap-1">
+                                <input
+                                  type="text"
+                                  value={editingMed.dosageForm}
+                                  onChange={(e) => setEditingMed({ ...editingMed, dosageForm: e.target.value })}
+                                  className="w-20 px-2 py-1 border border-slate-300 rounded bg-white"
+                                />
+                                <input
+                                  type="text"
+                                  value={editingMed.strength}
+                                  onChange={(e) => setEditingMed({ ...editingMed, strength: e.target.value })}
+                                  className="w-20 px-2 py-1 border border-slate-300 rounded bg-white"
+                                />
+                              </div>
+                            ) : (
+                              `${m.dosageForm} ${m.strength}`
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono tabular-nums font-semibold">
+                            {isEditing ? (
+                              <input
+                                type="number"
+                                min={0}
+                                value={editingMed.price}
+                                onChange={(e) => setEditingMed({ ...editingMed, price: Number(e.target.value) })}
+                                className="w-24 px-2 py-1 border border-slate-300 rounded text-right bg-white"
+                              />
+                            ) : (
+                              formatCurrencyIDR(m.price)
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono tabular-nums">
+                            {isEditing ? (
+                              <input
+                                type="number"
+                                min={0}
+                                value={editingMed.stock}
+                                onChange={(e) => setEditingMed({ ...editingMed, stock: Number(e.target.value) })}
+                                className="w-20 px-2 py-1 border border-slate-300 rounded text-right bg-white"
+                              />
+                            ) : (
+                              `${m.stock} ${m.unit}`
+                            )}
+                          </td>
+                          <td className="px-4 py-3 font-mono text-slate-600">
+                            {isEditing ? (
+                              <input
+                                type="date"
+                                value={editingMed.expiryDate}
+                                onChange={(e) => setEditingMed({ ...editingMed, expiryDate: e.target.value })}
+                                className="px-2 py-1 border border-slate-300 rounded bg-white"
+                              />
+                            ) : (
+                              m.expiryDate
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={m.active ? 'text-emerald-700 font-semibold' : 'text-slate-400'}>
+                              {m.active ? 'Aktif' : 'Nonaktif'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right whitespace-nowrap space-x-2.5">
+                            {isEditing ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleSaveEditMed()}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-teal-700 text-white font-semibold hover:bg-teal-800"
+                                >
+                                  <Check className="w-3 h-3" />
+                                  Simpan
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingMed(null)}
+                                  className="px-2 py-1 rounded border border-slate-300 text-slate-600"
+                                >
+                                  Batal
+                                </button>
+                              </>
+                            ) : confirmDeleteKey === deleteKey ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await deleteRecord('medicines', m.id);
+                                    setConfirmDeleteKey(null);
+                                    notifyToast(`Obat ${m.name} dihapus.`, 'info');
+                                  }}
+                                  className="px-2 py-1 rounded bg-red-600 text-white font-semibold hover:bg-red-700"
+                                >
+                                  Ya, Hapus
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteKey(null)}
+                                  className="text-slate-600"
+                                >
+                                  Batal
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingMed({ ...m })}
+                                  className="text-teal-700 hover:text-teal-900 font-semibold"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void upsertRecord('medicines', { ...m, active: !m.active })}
+                                  className="text-slate-600 hover:text-slate-900 font-semibold"
+                                >
+                                  {m.active ? 'Nonaktifkan' : 'Aktifkan'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteKey(deleteKey)}
+                                  className="text-red-600 hover:text-red-800 font-semibold"
+                                >
+                                  Hapus
+                                </button>
+                              </>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 3: ICD-10 CODES */}
+        {catalogTab === 'icd10' && (
+          <div className="space-y-4">
+            <form
+              onSubmit={handleAddIcd}
+              className="bg-white border border-slate-200 rounded-xl p-5 grid grid-cols-1 sm:grid-cols-5 gap-3 items-end"
+            >
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Kode ICD-10</label>
+                <input
+                  type="text"
+                  required
+                  value={newIcd.code}
+                  onChange={(e) => setNewIcd({ ...newIcd, code: e.target.value })}
+                  placeholder="O14.1"
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Deskripsi Diagnosis</label>
+                <input
+                  type="text"
+                  required
+                  value={newIcd.name}
+                  onChange={(e) => setNewIcd({ ...newIcd, name: e.target.value })}
+                  placeholder="Preeklampsia berat"
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Kategori</label>
+                <input
+                  type="text"
+                  value={newIcd.category}
+                  onChange={(e) => setNewIcd({ ...newIcd, category: e.target.value })}
+                  placeholder="Obstetri / Ginekologi"
+                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg"
+                />
+              </div>
+              <button
+                type="submit"
+                className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 whitespace-nowrap"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Tambah ICD-10
+              </button>
+            </form>
+
+            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                    <tr>
+                      <th className="px-4 py-3 text-left font-semibold">Kode</th>
+                      <th className="px-4 py-3 text-left font-semibold">Deskripsi Diagnosis</th>
+                      <th className="px-4 py-3 text-left font-semibold">Kategori</th>
+                      <th className="px-4 py-3 text-left font-semibold">Status</th>
+                      <th className="px-4 py-3 text-right font-semibold">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredIcds.map((item) => {
+                      const isEditing = editingIcd?.id === item.id;
+                      const deleteKey = `icd:${item.id}`;
+                      return (
+                        <tr key={item.id} className={isEditing ? 'bg-teal-50/40' : ''}>
+                          <td className="px-4 py-3 font-mono font-semibold text-teal-800">
+                            {isEditing ? (
+                              <input
+                                type="text"
+                                value={editingIcd.code}
+                                onChange={(e) => setEditingIcd({ ...editingIcd, code: e.target.value })}
+                                className="w-24 px-2 py-1 border border-slate-300 rounded font-mono bg-white"
+                              />
+                            ) : (
+                              item.code
+                            )}
+                          </td>
+                          <td className="px-4 py-3 font-medium text-slate-900">
+                            {isEditing ? (
+                              <input
+                                type="text"
+                                value={editingIcd.name}
+                                onChange={(e) => setEditingIcd({ ...editingIcd, name: e.target.value })}
+                                className="w-full px-2 py-1 border border-slate-300 rounded bg-white"
+                              />
+                            ) : (
+                              item.name
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-slate-600">
+                            {isEditing ? (
+                              <input
+                                type="text"
+                                value={editingIcd.category}
+                                onChange={(e) => setEditingIcd({ ...editingIcd, category: e.target.value })}
+                                className="w-36 px-2 py-1 border border-slate-300 rounded bg-white"
+                              />
+                            ) : (
+                              item.category
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={item.active ? 'text-emerald-700 font-semibold' : 'text-slate-400'}>
+                              {item.active ? 'Aktif' : 'Nonaktif'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right whitespace-nowrap space-x-2.5">
+                            {isEditing ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleSaveEditIcd()}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-teal-700 text-white font-semibold"
+                                >
+                                  <Check className="w-3 h-3" />
+                                  Simpan
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingIcd(null)}
+                                  className="px-2 py-1 rounded border border-slate-300 text-slate-600"
+                                >
+                                  Batal
+                                </button>
+                              </>
+                            ) : confirmDeleteKey === deleteKey ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await deleteRecord('icd10_codes', item.id);
+                                    setConfirmDeleteKey(null);
+                                    notifyToast(`Kode ICD-10 ${item.code} dihapus.`, 'info');
+                                  }}
+                                  className="px-2 py-1 rounded bg-red-600 text-white font-semibold"
+                                >
+                                  Ya, Hapus
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteKey(null)}
+                                  className="text-slate-600"
+                                >
+                                  Batal
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingIcd({ ...item })}
+                                  className="text-teal-700 hover:text-teal-900 font-semibold"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void upsertRecord('icd10_codes', { ...item, active: !item.active })}
+                                  className="text-slate-600 hover:text-slate-900 font-semibold"
+                                >
+                                  {item.active ? 'Nonaktifkan' : 'Aktifkan'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteKey(deleteKey)}
+                                  className="text-red-600 hover:text-red-800 font-semibold"
+                                >
+                                  Hapus
+                                </button>
+                              </>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
 
-  // ==================== VIEW: USERS & E2EE ACCOUNTS ====================
+  // ==================== VIEW: USERS & E2EE ACCOUNTS (FULL ADD / EDIT / RESET / DELETE) ====================
   if (activeView === 'settings-users') {
     const handleCreateUser = async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!newUser.username.trim() || !newUser.password.trim() || !newUser.displayName.trim()) {
-        notifyToast('Username, password (min. 6 karakter), dan nama lengkap wajib diisi.', 'error');
+      if (!newUser.username.trim() || !newUser.displayName.trim()) {
+        notifyToast('Username dan nama lengkap wajib diisi.', 'error');
+        return;
+      }
+      if (!newUser.password.trim() || newUser.password.length < 6) {
+        notifyToast('Password minimal 6 karakter.', 'error');
         return;
       }
       try {
@@ -560,6 +1717,24 @@ export const SettingsModule: React.FC = () => {
       }
     };
 
+    const handleSaveEditUser = async () => {
+      if (!editingUser) return;
+      try {
+        await updateStaffAccount(editingUser.id, {
+          username: editingUser.username,
+          displayName: editingUser.displayName,
+          email: editingUser.email,
+          role: editingUser.role,
+          active: editingUser.active,
+          strNumber: editingUser.strNumber || '',
+          sipNumber: editingUser.sipNumber || ''
+        });
+        setEditingUser(null);
+      } catch (err) {
+        notifyToast(err instanceof Error ? err.message : 'Gagal memperbarui akun.', 'error');
+      }
+    };
+
     const handleResetPassword = async (userId: string) => {
       if (resetPasswordValue.length < 6) {
         notifyToast('Password baru minimal 6 karakter.', 'error');
@@ -574,23 +1749,29 @@ export const SettingsModule: React.FC = () => {
       }
     };
 
+    const handleDeleteUser = async (userId: string) => {
+      try {
+        await deleteStaffAccount(userId);
+        setConfirmDeleteKey(null);
+      } catch (err) {
+        notifyToast(err instanceof Error ? err.message : 'Gagal menghapus pengguna.', 'error');
+      }
+    };
+
     return (
       <div className="space-y-6">
         <div>
           <h1 className="text-xl font-bold text-slate-900">Manajemen Pengguna &amp; Enkripsi E2EE Per Akun</h1>
           <p className="text-sm text-slate-500">
-            Setiap akun staf menerima kunci vault AES-256-GCM terbungkus PBKDF2-SHA256 unik. Fingerprint Vault Aktif:{' '}
+            Tambah, edit profil/role/email, reset password, aktifkan/nonaktifkan, atau hapus akun staf. Email Google yang didaftarkan otomatis mendapat role sesuai tabel saat login Firebase. Fingerprint Vault:{' '}
             <span className="font-mono text-teal-800 font-semibold">{e2eeFingerprint || 'N/A'}</span>
           </p>
         </div>
 
-        <form
-          onSubmit={handleCreateUser}
-          className="bg-white border border-slate-200 rounded-xl p-5 space-y-4"
-        >
+        <form onSubmit={handleCreateUser} className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
           <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
             <UserPlus className="w-4 h-4 text-teal-700" />
-            Buat Akun Staf Baru (Dokter / Asisten / Super Admin)
+            Tambah Akun Pengguna Baru (Dokter / Asisten / Super Admin)
           </h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <input
@@ -598,7 +1779,7 @@ export const SettingsModule: React.FC = () => {
               required
               value={newUser.username}
               onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
-              placeholder="Username login"
+              placeholder="Username login (min. 3 karakter)"
               className="px-3 py-2 text-xs border border-slate-200 rounded-lg"
             />
             <input
@@ -631,7 +1812,7 @@ export const SettingsModule: React.FC = () => {
               type="email"
               value={newUser.email}
               onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
-              placeholder="Email staf"
+              placeholder="Email Google / Staf"
               className="px-3 py-2 text-xs border border-slate-200 rounded-lg"
             />
             <input
@@ -652,7 +1833,7 @@ export const SettingsModule: React.FC = () => {
               type="submit"
               className="py-2 px-4 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 whitespace-nowrap"
             >
-              Buat Akun + Kunci E2EE
+              Buat Akun Pengguna
             </button>
           </div>
         </form>
@@ -663,7 +1844,7 @@ export const SettingsModule: React.FC = () => {
               <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
                 <tr>
                   <th className="px-4 py-3 text-left font-semibold">Username</th>
-                  <th className="px-4 py-3 text-left font-semibold">Nama &amp; Email</th>
+                  <th className="px-4 py-3 text-left font-semibold">Nama, Email &amp; STR/SIP</th>
                   <th className="px-4 py-3 text-left font-semibold">Role</th>
                   <th className="px-4 py-3 text-left font-semibold">Kunci E2EE</th>
                   <th className="px-4 py-3 text-left font-semibold">Status</th>
@@ -671,66 +1852,211 @@ export const SettingsModule: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {dbState.users.map((u) => (
-                  <React.Fragment key={u.id}>
-                    <tr>
-                      <td className="px-4 py-3 font-mono font-semibold text-slate-900">{u.username}</td>
-                      <td className="px-4 py-3">
-                        <p className="font-semibold text-slate-900">{u.displayName}</p>
-                        <p className="text-[11px] text-slate-500">{u.email}</p>
-                      </td>
-                      <td className="px-4 py-3 font-semibold text-teal-800">{ROLE_LABELS[u.role]}</td>
-                      <td className="px-4 py-3 font-mono text-[11px] text-slate-600">
-                        {u.e2eeFingerprint ? `AES-256-GCM · ${u.e2eeFingerprint}` : 'Terlindung'}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={u.active ? 'text-emerald-700 font-semibold' : 'text-red-700 font-semibold'}>
-                          {u.active ? 'Aktif' : 'Nonaktif'}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right space-x-3 whitespace-nowrap">
-                        <button
-                          type="button"
-                          onClick={() => setResetTargetUserId(resetTargetUserId === u.id ? null : u.id)}
-                          className="text-teal-700 hover:text-teal-900 font-semibold"
-                        >
-                          Reset Password
-                        </button>
-                        {u.id !== currentUser.id && (
-                          <button
-                            type="button"
-                            onClick={() => updateStaffAccount(u.id, { active: !u.active })}
-                            className="text-slate-600 hover:text-slate-900 font-semibold"
-                          >
-                            {u.active ? 'Nonaktifkan' : 'Aktifkan'}
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                    {resetTargetUserId === u.id && (
-                      <tr className="bg-slate-50">
-                        <td colSpan={6} className="px-4 py-3">
-                          <div className="flex flex-wrap items-center gap-2">
+                {dbState.users.map((u) => {
+                  const isSelf = u.id === currentUser.id;
+                  const isEditing = editingUser?.id === u.id;
+                  const deleteKey = `usr:${u.id}`;
+                  return (
+                    <React.Fragment key={u.id}>
+                      <tr className={isEditing ? 'bg-teal-50/40' : ''}>
+                        <td className="px-4 py-3 font-mono font-semibold text-slate-900">
+                          {isEditing ? (
                             <input
-                              type="password"
-                              value={resetPasswordValue}
-                              onChange={(e) => setResetPasswordValue(e.target.value)}
-                              placeholder="Password baru (min. 6 karakter, re-wrap E2EE otomatis)"
-                              className="flex-1 min-w-[240px] px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg"
+                              type="text"
+                              value={editingUser.username}
+                              onChange={(e) => setEditingUser({ ...editingUser, username: e.target.value })}
+                              className="w-32 px-2 py-1 border border-slate-300 rounded font-mono bg-white"
                             />
-                            <button
-                              type="button"
-                              onClick={() => handleResetPassword(u.id)}
-                              className="px-3 py-1.5 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 whitespace-nowrap"
+                          ) : (
+                            u.username
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          {isEditing ? (
+                            <div className="space-y-1.5 min-w-[220px]">
+                              <input
+                                type="text"
+                                value={editingUser.displayName}
+                                onChange={(e) => setEditingUser({ ...editingUser, displayName: e.target.value })}
+                                placeholder="Nama lengkap"
+                                className="w-full px-2 py-1 border border-slate-300 rounded bg-white font-semibold"
+                              />
+                              <input
+                                type="email"
+                                value={editingUser.email}
+                                onChange={(e) => setEditingUser({ ...editingUser, email: e.target.value })}
+                                placeholder="Email Google / staf"
+                                className="w-full px-2 py-1 border border-slate-300 rounded bg-white text-[11px]"
+                              />
+                              <div className="grid grid-cols-2 gap-1.5">
+                                <input
+                                  type="text"
+                                  value={editingUser.strNumber || ''}
+                                  onChange={(e) => setEditingUser({ ...editingUser, strNumber: e.target.value })}
+                                  placeholder="No. STR"
+                                  className="px-2 py-1 border border-slate-200 rounded bg-white font-mono text-[11px]"
+                                />
+                                <input
+                                  type="text"
+                                  value={editingUser.sipNumber || ''}
+                                  onChange={(e) => setEditingUser({ ...editingUser, sipNumber: e.target.value })}
+                                  placeholder="No. SIP"
+                                  className="px-2 py-1 border border-slate-200 rounded bg-white font-mono text-[11px]"
+                                />
+                              </div>
+                            </div>
+                          ) : (
+                            <div>
+                              <p className="font-semibold text-slate-900">{u.displayName}</p>
+                              <p className="text-[11px] text-slate-500">{u.email}</p>
+                              {(u.strNumber || u.sipNumber) && (
+                                <p className="text-[10px] font-mono text-slate-400 mt-0.5">
+                                  {u.strNumber ? `STR: ${u.strNumber}` : ''}
+                                  {u.strNumber && u.sipNumber ? ' · ' : ''}
+                                  {u.sipNumber ? `SIP: ${u.sipNumber}` : ''}
+                                </p>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 font-semibold text-teal-800">
+                          {isEditing && !isSelf ? (
+                            <select
+                              value={editingUser.role}
+                              onChange={(e) => setEditingUser({ ...editingUser, role: e.target.value as RoleCode })}
+                              className="px-2 py-1 border border-slate-300 rounded bg-white text-xs"
                             >
-                              Simpan Password Baru
-                            </button>
-                          </div>
+                              <option value="DOKTER_SPOG">Dokter Sp.OG</option>
+                              <option value="ASISTEN_DOKTER">Asisten Dokter</option>
+                              <option value="SUPER_ADMIN">Super Admin</option>
+                            </select>
+                          ) : (
+                            ROLE_LABELS[u.role]
+                          )}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-[11px] text-slate-600">
+                          {u.e2eeFingerprint ? `AES-256-GCM · ${u.e2eeFingerprint}` : 'Terlindung'}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={u.active ? 'text-emerald-700 font-semibold' : 'text-red-700 font-semibold'}>
+                            {u.active ? 'Aktif' : 'Nonaktif'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right space-x-2.5 whitespace-nowrap">
+                          {isEditing ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => void handleSaveEditUser()}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-teal-700 text-white font-semibold hover:bg-teal-800"
+                              >
+                                <Check className="w-3 h-3" />
+                                Simpan
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingUser(null)}
+                                className="px-2 py-1 rounded border border-slate-300 text-slate-600"
+                              >
+                                Batal
+                              </button>
+                            </>
+                          ) : confirmDeleteKey === deleteKey ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => void handleDeleteUser(u.id)}
+                                className="px-2 py-1 rounded bg-red-600 text-white font-semibold hover:bg-red-700"
+                              >
+                                Ya, Hapus
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteKey(null)}
+                                className="text-slate-600"
+                              >
+                                Batal
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setResetTargetUserId(null);
+                                  setEditingUser({ ...u });
+                                }}
+                                className="text-teal-700 hover:text-teal-900 font-semibold"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingUser(null);
+                                  setResetTargetUserId(resetTargetUserId === u.id ? null : u.id);
+                                }}
+                                className="text-slate-700 hover:text-slate-900 font-semibold"
+                              >
+                                Reset Password
+                              </button>
+                              {!isSelf && (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => void updateStaffAccount(u.id, { active: !u.active })}
+                                    className="text-slate-600 hover:text-slate-900 font-semibold"
+                                  >
+                                    {u.active ? 'Nonaktifkan' : 'Aktifkan'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteKey(deleteKey)}
+                                    className="text-red-600 hover:text-red-800 font-semibold"
+                                  >
+                                    Hapus
+                                  </button>
+                                </>
+                              )}
+                            </>
+                          )}
                         </td>
                       </tr>
-                    )}
-                  </React.Fragment>
-                ))}
+                      {resetTargetUserId === u.id && (
+                        <tr className="bg-slate-50">
+                          <td colSpan={6} className="px-4 py-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <input
+                                type="password"
+                                value={resetPasswordValue}
+                                onChange={(e) => setResetPasswordValue(e.target.value)}
+                                placeholder="Password baru (min. 6 karakter, re-wrap E2EE otomatis)"
+                                className="flex-1 min-w-[240px] px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => void handleResetPassword(u.id)}
+                                className="px-3 py-1.5 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 whitespace-nowrap"
+                              >
+                                Simpan Password Baru
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setResetTargetUserId(null);
+                                  setResetPasswordValue('');
+                                }}
+                                className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs text-slate-600"
+                              >
+                                Batal
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -739,7 +2065,7 @@ export const SettingsModule: React.FC = () => {
     );
   }
 
-  // ==================== VIEW: GRANULAR RBAC PERMISSIONS ====================
+  // ==================== VIEW: GRANULAR RBAC PERMISSIONS & ROLE EDITOR ====================
   if (activeView === 'settings-permissions') {
     const togglePermission = async (roleCode: 'DOKTER_SPOG' | 'ASISTEN_DOKTER', permKey: string) => {
       if (roleCode === 'ASISTEN_DOKTER' && HARD_LOCKED_ASSISTANT.includes(permKey)) return;
@@ -751,20 +2077,161 @@ export const SettingsModule: React.FC = () => {
         ? roleDef.permissions.filter((p) => p !== permKey)
         : [...roleDef.permissions, permKey];
       await upsertRecord('roles', { ...roleDef, permissions: nextPerms });
-      notifyToast(`Hak akses ${ROLE_LABELS[roleCode]} diperbarui.`, 'success');
+      notifyToast(`Hak akses ${roleDef.name} diperbarui.`, 'success');
+    };
+
+    const handleSaveRoleMeta = async () => {
+      if (!editingRole) return;
+      await upsertRecord('roles', {
+        ...editingRole,
+        name: editingRole.name.trim() || ROLE_LABELS[editingRole.code],
+        description: editingRole.description.trim()
+      });
+      setEditingRole(null);
+      notifyToast('Detail role berhasil diperbarui dan disimpan online.', 'success');
+    };
+
+    const handleAddPermission = async (e: React.FormEvent) => {
+      e.preventDefault();
+      const keyNorm = newPerm.key.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '');
+      if (!keyNorm || !newPerm.label.trim()) {
+        notifyToast('Isi kode key dan label kewenangan.', 'error');
+        return;
+      }
+      const nowIso = new Date().toISOString();
+      const item: PermissionDefinition = {
+        id: `perm-${keyNorm.replace(/\./g, '-')}-${Date.now().toString(36)}`,
+        key: keyNorm,
+        module: newPerm.module.trim() || 'Kustom',
+        label: newPerm.label.trim(),
+        active: true,
+        createdAt: nowIso,
+        createdBy: currentUser.id,
+        updatedAt: nowIso,
+        updatedBy: currentUser.id
+      };
+      await upsertRecord('permissions', item);
+      setNewPerm({ key: '', module: 'Pengaturan', label: '' });
+      notifyToast(`Variabel hak akses "${item.key}" ditambahkan.`, 'success');
     };
 
     const dokterRole = dbState.roles.find((r) => r.code === 'DOKTER_SPOG');
     const asistenRole = dbState.roles.find((r) => r.code === 'ASISTEN_DOKTER');
 
     return (
-      <div className="space-y-5">
+      <div className="space-y-6">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Matriks Hak Akses Granular (RBAC)</h1>
+          <h1 className="text-xl font-bold text-slate-900">Manajemen Role &amp; Matriks Hak Akses Granular (RBAC)</h1>
           <p className="text-sm text-slate-500">
-            Atur kewenangan spesifik per modul. Pemisahan mutlak medis vs kasir dikunci secara sistem untuk kepatuhan klinis.
+            Ubah nama/deskripsi role, tambah variabel hak akses baru, dan atur kewenangan per modul secara granular.
           </p>
         </div>
+
+        {/* Editable Role Descriptions */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {dbState.roles.map((r) => {
+            const isEditing = editingRole?.id === r.id;
+            return (
+              <div key={r.id} className="bg-white border border-slate-200 rounded-xl p-4 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-[11px] font-semibold text-teal-800">{r.code}</span>
+                  {isEditing ? (
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => void handleSaveRoleMeta()}
+                        className="px-2 py-1 rounded bg-teal-700 text-white text-[11px] font-semibold"
+                      >
+                        Simpan
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingRole(null)}
+                        className="px-2 py-1 rounded border border-slate-200 text-[11px] text-slate-600"
+                      >
+                        Batal
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setEditingRole({ ...r })}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-teal-700 hover:text-teal-900"
+                    >
+                      <Edit3 className="w-3 h-3" />
+                      Edit
+                    </button>
+                  )}
+                </div>
+                {isEditing ? (
+                  <div className="space-y-2">
+                    <input
+                      type="text"
+                      value={editingRole.name}
+                      onChange={(e) => setEditingRole({ ...editingRole, name: e.target.value })}
+                      className="w-full px-2.5 py-1.5 text-xs font-semibold border border-slate-300 rounded-lg"
+                    />
+                    <textarea
+                      rows={3}
+                      value={editingRole.description}
+                      onChange={(e) => setEditingRole({ ...editingRole, description: e.target.value })}
+                      className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg"
+                    />
+                  </div>
+                ) : (
+                  <>
+                    <h2 className="text-sm font-bold text-slate-900">{r.name}</h2>
+                    <p className="text-xs text-slate-600 leading-relaxed">{r.description}</p>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Add Custom Permission Variable */}
+        <form
+          onSubmit={handleAddPermission}
+          className="bg-white border border-slate-200 rounded-xl p-4 grid grid-cols-1 sm:grid-cols-4 gap-3 items-end"
+        >
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">Key Kewenangan Baru</label>
+            <input
+              type="text"
+              value={newPerm.key}
+              onChange={(e) => setNewPerm({ ...newPerm, key: e.target.value })}
+              placeholder="mis. reports.export_excel"
+              className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">Modul</label>
+            <input
+              type="text"
+              value={newPerm.module}
+              onChange={(e) => setNewPerm({ ...newPerm, module: e.target.value })}
+              placeholder="Laporan"
+              className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">Label Deskripsi</label>
+            <input
+              type="text"
+              value={newPerm.label}
+              onChange={(e) => setNewPerm({ ...newPerm, label: e.target.value })}
+              placeholder="Ekspor laporan bulanan"
+              className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg"
+            />
+          </div>
+          <button
+            type="submit"
+            className="inline-flex items-center justify-center gap-1.5 py-2 px-4 rounded-lg bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 whitespace-nowrap"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Tambah Hak Akses
+          </button>
+        </form>
 
         <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
           <div className="overflow-x-auto">
@@ -776,10 +2243,11 @@ export const SettingsModule: React.FC = () => {
                   <th className="px-4 py-3 text-center font-semibold">Super Admin</th>
                   <th className="px-4 py-3 text-center font-semibold">Dokter Sp.OG</th>
                   <th className="px-4 py-3 text-center font-semibold">Asisten Dokter</th>
+                  <th className="px-4 py-3 text-right font-semibold">Aksi</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {PERMISSION_CATALOG.map((perm) => {
+                {mergedPermissions.map((perm) => {
                   const docLocked = HARD_LOCKED_DOCTOR.includes(perm.key);
                   const astLocked = HARD_LOCKED_ASSISTANT.includes(perm.key);
                   const docChecked = Boolean(dokterRole?.permissions.includes(perm.key)) && !docLocked;
@@ -787,7 +2255,10 @@ export const SettingsModule: React.FC = () => {
                   return (
                     <tr key={perm.key} className="hover:bg-slate-50/70">
                       <td className="px-4 py-2.5 font-semibold text-slate-800">{perm.module}</td>
-                      <td className="px-4 py-2.5 text-slate-700">{perm.label}</td>
+                      <td className="px-4 py-2.5">
+                        <p className="text-slate-700">{perm.label}</p>
+                        <p className="text-[10px] font-mono text-slate-400">{perm.key}</p>
+                      </td>
                       <td className="px-4 py-2.5 text-center text-emerald-700 font-semibold">Penuh</td>
                       <td className="px-4 py-2.5 text-center">
                         {docLocked ? (
@@ -796,7 +2267,7 @@ export const SettingsModule: React.FC = () => {
                           <input
                             type="checkbox"
                             checked={docChecked}
-                            onChange={() => togglePermission('DOKTER_SPOG', perm.key)}
+                            onChange={() => void togglePermission('DOKTER_SPOG', perm.key)}
                             aria-label={`Dokter Sp.OG ${perm.label}`}
                             className="w-4 h-4 accent-teal-700 cursor-pointer"
                           />
@@ -809,10 +2280,26 @@ export const SettingsModule: React.FC = () => {
                           <input
                             type="checkbox"
                             checked={astChecked}
-                            onChange={() => togglePermission('ASISTEN_DOKTER', perm.key)}
+                            onChange={() => void togglePermission('ASISTEN_DOKTER', perm.key)}
                             aria-label={`Asisten Dokter ${perm.label}`}
                             className="w-4 h-4 accent-teal-700 cursor-pointer"
                           />
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 text-right">
+                        {perm.isCustom && perm.id ? (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await deleteRecord('permissions', perm.id!);
+                              notifyToast(`Hak akses kustom "${perm.key}" dihapus.`, 'info');
+                            }}
+                            className="text-red-600 hover:text-red-800 font-semibold"
+                          >
+                            Hapus
+                          </button>
+                        ) : (
+                          <span className="text-[11px] text-slate-400">Standar</span>
                         )}
                       </td>
                     </tr>
@@ -834,7 +2321,7 @@ export const SettingsModule: React.FC = () => {
         ...systemSettings,
         templates: templatesForm
       });
-      notifyToast('Template dokumen resmi berhasil diperbarui.', 'success');
+      notifyToast('Template dokumen resmi berhasil diperbarui dan disimpan online.', 'success');
     };
 
     return (
@@ -881,7 +2368,7 @@ export const SettingsModule: React.FC = () => {
     );
   }
 
-  // ==================== VIEW: INTEGRATIONS (SATUSEHAT / WHATSAPP / FIREBASE) ====================
+  // ==================== VIEW: INTEGRATIONS (ADD / EDIT / DELETE + CLOUD SYNC) ====================
   if (activeView === 'settings-integrations') {
     const samplePatient = dbState.patients[0];
     const satusehatCfg = dbState.integrations.find((i) => i.provider === 'SATUSEHAT_FHIR');
@@ -895,65 +2382,343 @@ export const SettingsModule: React.FC = () => {
         enabled: !cfg.enabled,
         lastTestedAt: new Date().toISOString()
       });
-      notifyToast(`Konfigurasi ${cfg.name} diperbarui.`, 'success');
+      notifyToast(`Status ${cfg.name} diperbarui.`, 'success');
+    };
+
+    const handleSaveEditIntegration = async () => {
+      if (!editingIntegration) return;
+      await upsertRecord('integrations', {
+        ...editingIntegration,
+        name: editingIntegration.name.trim(),
+        endpointUrl: editingIntegration.endpointUrl.trim(),
+        lastTestedAt: new Date().toISOString()
+      });
+      setEditingIntegration(null);
+      notifyToast('Variabel konfigurasi integrasi disimpan ke database online.', 'success');
+    };
+
+    const handleAddIntegration = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!newIntegration.name.trim() || !newIntegration.endpointUrl.trim()) {
+        notifyToast('Nama integrasi dan URL endpoint wajib diisi.', 'error');
+        return;
+      }
+      const nowIso = new Date().toISOString();
+      const item: IntegrationConfig = {
+        id: `int-${Date.now()}`,
+        provider: newIntegration.provider.trim().toUpperCase() || 'CUSTOM_API',
+        name: newIntegration.name.trim(),
+        endpointUrl: newIntegration.endpointUrl.trim(),
+        organizationId: newIntegration.organizationId.trim() || undefined,
+        clientId: newIntegration.clientId.trim() || undefined,
+        senderNumber: newIntegration.senderNumber.trim() || undefined,
+        statusNote: newIntegration.statusNote.trim() || 'Integrasi eksternal terdaftar.',
+        enabled: false,
+        createdAt: nowIso,
+        createdBy: currentUser.id,
+        updatedAt: nowIso,
+        updatedBy: currentUser.id
+      };
+      await upsertRecord('integrations', item);
+      setNewIntegration({
+        name: '',
+        provider: 'CUSTOM_API',
+        endpointUrl: '',
+        organizationId: '',
+        clientId: '',
+        senderNumber: '',
+        statusNote: ''
+      });
+      notifyToast('Konfigurasi integrasi baru ditambahkan.', 'success');
     };
 
     return (
       <div className="space-y-6">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Integrasi API, Cloud Firestore &amp; Kesiapan SATUSEHAT</h1>
+          <h1 className="text-xl font-bold text-slate-900">Integrasi API, Database Online Cloud Firestore &amp; SATUSEHAT</h1>
           <p className="text-sm text-slate-500">
-            Arsitektur siap integrasi HL7 FHIR R4, WhatsApp Business API, dan sinkronisasi Cloud Firestore. Catatan kepatuhan: integrasi SATUSEHAT memerlukan proses registrasi dan uji kepatuhan resmi Kemenkes sebelum produksi.
+            Kelola koneksi database online real-time serta tambah dan ubah seluruh variabel endpoint integrasi eksternal (SATUSEHAT FHIR R4, WhatsApp API, atau API kustom).
           </p>
         </div>
 
+        {/* Cloud Firestore Live Sync Control Card */}
         <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <Cloud className="w-5 h-5 text-teal-700" />
+            <Cloud className={`w-5 h-5 ${cloudSynced ? 'text-emerald-600' : 'text-teal-700'}`} />
             <div>
-              <p className="text-sm font-bold text-slate-900">Firebase Cloud Firestore Real-Time Sync</p>
+              <p className="text-sm font-bold text-slate-900">
+                Database Online Cloud Firestore{' '}
+                <span className={cloudSynced ? 'text-emerald-700' : 'text-amber-700'}>
+                  ({cloudSynced ? 'Tersinkron Real-Time' : 'Belum Terhubung'})
+                </span>
+              </p>
               <p className="text-xs text-slate-500">
                 {firebaseUser
-                  ? `Terhubung sebagai ${firebaseUser.email}`
-                  : 'Hubungkan akun Google Anda untuk menyinkronkan database langsung ke Cloud Firestore.'}
+                  ? `Terhubung sebagai ${firebaseUser.email} — seluruh operasi tambah, ubah, dan hapus tersimpan langsung di database online.`
+                  : 'Hubungkan akun Google Firebase Anda agar setiap perubahan data tersimpan permanen secara real-time di Cloud Firestore.'}
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={connectFirebaseCloud}
-            className="px-4 py-2 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 whitespace-nowrap"
-          >
-            {firebaseUser ? 'Sinkronkan Ulang Cloud' : 'Hubungkan Firebase Cloud'}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={syncingCloud}
+              onClick={() => void connectFirebaseCloud()}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 disabled:opacity-60 whitespace-nowrap"
+            >
+              <Cloud className="w-3.5 h-3.5" />
+              {firebaseUser ? 'Hubungkan Ulang Cloud' : 'Hubungkan Database Online'}
+            </button>
+            {firebaseUser && (
+              <button
+                type="button"
+                disabled={syncingCloud}
+                onClick={() => void syncAllToFirestore()}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-teal-300 bg-teal-50 text-teal-800 text-xs font-semibold hover:bg-teal-100 disabled:opacity-60 whitespace-nowrap"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${syncingCloud ? 'animate-spin' : ''}`} />
+                Dorong Semua Data ke Cloud
+              </button>
+            )}
+          </div>
         </div>
 
+        {/* Add New Integration Form */}
+        <form onSubmit={handleAddIntegration} className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
+          <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+            <Plus className="w-4 h-4 text-teal-700" />
+            Tambah Variabel Integrasi API Baru
+          </h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <input
+              type="text"
+              required
+              value={newIntegration.name}
+              onChange={(e) => setNewIntegration({ ...newIntegration, name: e.target.value })}
+              placeholder="Nama Integrasi (mis. BPJS / Lab Eksternal)"
+              className="px-3 py-2 text-xs border border-slate-200 rounded-lg"
+            />
+            <input
+              type="text"
+              value={newIntegration.provider}
+              onChange={(e) => setNewIntegration({ ...newIntegration, provider: e.target.value })}
+              placeholder="Kode Provider (mis. CUSTOM_API)"
+              className="px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono"
+            />
+            <input
+              type="url"
+              required
+              value={newIntegration.endpointUrl}
+              onChange={(e) => setNewIntegration({ ...newIntegration, endpointUrl: e.target.value })}
+              placeholder="https://api.example.com/v1"
+              className="sm:col-span-2 px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono"
+            />
+            <input
+              type="text"
+              value={newIntegration.organizationId}
+              onChange={(e) => setNewIntegration({ ...newIntegration, organizationId: e.target.value })}
+              placeholder="Organization ID (opsional)"
+              className="px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono"
+            />
+            <input
+              type="text"
+              value={newIntegration.clientId}
+              onChange={(e) => setNewIntegration({ ...newIntegration, clientId: e.target.value })}
+              placeholder="Client ID (opsional)"
+              className="px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono"
+            />
+            <input
+              type="text"
+              value={newIntegration.statusNote}
+              onChange={(e) => setNewIntegration({ ...newIntegration, statusNote: e.target.value })}
+              placeholder="Catatan konfigurasi"
+              className="px-3 py-2 text-xs border border-slate-200 rounded-lg"
+            />
+            <button
+              type="submit"
+              className="py-2 px-4 rounded-lg bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 whitespace-nowrap"
+            >
+              Simpan Integrasi Baru
+            </button>
+          </div>
+        </form>
+
+        {/* Editable Integration Cards */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          {dbState.integrations.map((cfg) => (
-            <div key={cfg.id} className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Link2 className="w-4 h-4 text-teal-700" />
-                  <h2 className="text-sm font-bold text-slate-900">{cfg.name}</h2>
+          {dbState.integrations.map((cfg) => {
+            const isEditing = editingIntegration?.id === cfg.id;
+            const deleteKey = `int:${cfg.id}`;
+            return (
+              <div key={cfg.id} className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Link2 className="w-4 h-4 text-teal-700 shrink-0" />
+                    <h2 className="text-sm font-bold text-slate-900 truncate">{cfg.name}</h2>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => void handleToggleIntegration(cfg)}
+                      className={`px-3 py-1 rounded-lg text-xs font-semibold border whitespace-nowrap ${
+                        cfg.enabled
+                          ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                          : 'border-slate-200 bg-slate-50 text-slate-600'
+                      }`}
+                    >
+                      {cfg.enabled ? 'Aktif' : 'Nonaktif'}
+                    </button>
+                    {!isEditing && (
+                      <button
+                        type="button"
+                        onClick={() => setEditingIntegration({ ...cfg })}
+                        className="px-2.5 py-1 rounded-lg border border-slate-200 text-xs font-semibold text-teal-700 hover:bg-slate-50"
+                      >
+                        Edit
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => handleToggleIntegration(cfg)}
-                  className={`px-3 py-1 rounded-lg text-xs font-semibold border whitespace-nowrap ${
-                    cfg.enabled
-                      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                      : 'border-slate-200 bg-slate-50 text-slate-600'
-                  }`}
-                >
-                  {cfg.enabled ? 'Aktif' : 'Nonaktif'}
-                </button>
+
+                {isEditing ? (
+                  <div className="space-y-2.5 pt-1">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">Nama Integrasi</label>
+                        <input
+                          type="text"
+                          value={editingIntegration.name}
+                          onChange={(e) => setEditingIntegration({ ...editingIntegration, name: e.target.value })}
+                          className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">Kode Provider</label>
+                        <input
+                          type="text"
+                          value={editingIntegration.provider}
+                          onChange={(e) => setEditingIntegration({ ...editingIntegration, provider: e.target.value })}
+                          className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg font-mono"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">Endpoint URL</label>
+                      <input
+                        type="text"
+                        value={editingIntegration.endpointUrl}
+                        onChange={(e) => setEditingIntegration({ ...editingIntegration, endpointUrl: e.target.value })}
+                        className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg font-mono"
+                      />
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">Organization ID</label>
+                        <input
+                          type="text"
+                          value={editingIntegration.organizationId || ''}
+                          onChange={(e) =>
+                            setEditingIntegration({ ...editingIntegration, organizationId: e.target.value })
+                          }
+                          className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">Client ID</label>
+                        <input
+                          type="text"
+                          value={editingIntegration.clientId || ''}
+                          onChange={(e) => setEditingIntegration({ ...editingIntegration, clientId: e.target.value })}
+                          className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">Nomor Pengirim</label>
+                        <input
+                          type="text"
+                          value={editingIntegration.senderNumber || ''}
+                          onChange={(e) =>
+                            setEditingIntegration({ ...editingIntegration, senderNumber: e.target.value })
+                          }
+                          className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg font-mono"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">Catatan Status</label>
+                      <textarea
+                        rows={2}
+                        value={editingIntegration.statusNote}
+                        onChange={(e) => setEditingIntegration({ ...editingIntegration, statusNote: e.target.value })}
+                        className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg"
+                      />
+                    </div>
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditingIntegration(null)}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-600"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        Batal
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleSaveEditIntegration()}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        Simpan Variabel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-xs text-slate-600">{cfg.statusNote}</p>
+                    <div className="text-xs font-mono text-slate-500 break-all bg-slate-50 p-2.5 rounded-lg border border-slate-200 space-y-1">
+                      <div>Endpoint: {cfg.endpointUrl}</div>
+                      {cfg.organizationId && <div>Org ID: {cfg.organizationId}</div>}
+                      {cfg.clientId && <div>Client ID: {cfg.clientId}</div>}
+                      {cfg.senderNumber && <div>Sender: {cfg.senderNumber}</div>}
+                    </div>
+                    {cfg.provider !== 'FIREBASE_CLOUD' && (
+                      <div className="flex justify-end">
+                        {confirmDeleteKey === deleteKey ? (
+                          <div className="flex items-center gap-2 text-xs">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await deleteRecord('integrations', cfg.id);
+                                setConfirmDeleteKey(null);
+                                notifyToast(`Integrasi ${cfg.name} dihapus.`, 'info');
+                              }}
+                              className="px-2.5 py-1 rounded bg-red-600 text-white font-semibold"
+                            >
+                              Ya, Hapus
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteKey(null)}
+                              className="text-slate-600"
+                            >
+                              Batal
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteKey(deleteKey)}
+                            className="text-xs font-semibold text-red-600 hover:text-red-800"
+                          >
+                            Hapus Integrasi
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
-              <p className="text-xs text-slate-600">{cfg.statusNote}</p>
-              <div className="text-xs font-mono text-slate-500 break-all bg-slate-50 p-2.5 rounded-lg border border-slate-200">
-                Endpoint: {cfg.endpointUrl}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
@@ -996,7 +2761,7 @@ export const SettingsModule: React.FC = () => {
         updatedBy: currentUser.id
       };
       await upsertRecord('backups', rec);
-      notifyToast('File backup database JSON berhasil diunduh dan dicatat.', 'success');
+      notifyToast('File backup database JSON berhasil diunduh dan dicatat online.', 'success');
     };
 
     const handleImportBackup = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1019,7 +2784,7 @@ export const SettingsModule: React.FC = () => {
         <div>
           <h1 className="text-xl font-bold text-slate-900">Backup, Pemulihan Database &amp; Dataset Demonstrasi</h1>
           <p className="text-sm text-slate-500">
-            Ekspor dan pulihkan seluruh koleksi database. Data demonstrasi dipisahkan secara ketat (flag isDemo) agar tidak bercampur permanen dengan data produksi.
+            Ekspor dan pulihkan seluruh koleksi database online. Data demonstrasi dipisahkan secara ketat (flag isDemo) agar tidak bercampur permanen dengan data produksi.
           </p>
         </div>
 
@@ -1030,12 +2795,12 @@ export const SettingsModule: React.FC = () => {
               <h2 className="text-sm font-bold text-slate-900">Backup &amp; Restore Database</h2>
             </div>
             <p className="text-xs text-slate-600">
-              Unduh salinan lengkap seluruh 35 koleksi operasional praktik atau pulihkan dari arsip JSON sebelumnya.
+              Unduh salinan lengkap seluruh 35 koleksi operasional praktik atau pulihkan dari arsip JSON sebelumnya langsung ke database online.
             </p>
             <div className="flex flex-wrap items-center gap-3">
               <button
                 type="button"
-                onClick={handleExportBackup}
+                onClick={() => void handleExportBackup()}
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-teal-700 text-white text-xs font-semibold hover:bg-teal-800 whitespace-nowrap"
               >
                 <Download className="w-3.5 h-3.5" />
@@ -1060,7 +2825,7 @@ export const SettingsModule: React.FC = () => {
             <div className="flex flex-wrap items-center gap-3">
               <button
                 type="button"
-                onClick={loadDemoData}
+                onClick={() => void loadDemoData()}
                 className="px-4 py-2 rounded-lg bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 whitespace-nowrap"
               >
                 Muat Dataset Demonstrasi
@@ -1068,7 +2833,7 @@ export const SettingsModule: React.FC = () => {
               {demoCount > 0 && (
                 <button
                   type="button"
-                  onClick={clearDemoData}
+                  onClick={() => void clearDemoData()}
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-red-200 bg-red-50 text-red-700 text-xs font-semibold hover:bg-red-100 whitespace-nowrap"
                 >
                   <Trash2 className="w-3.5 h-3.5" />

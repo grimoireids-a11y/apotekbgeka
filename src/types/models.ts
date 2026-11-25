@@ -667,7 +667,7 @@ export interface SystemSettings extends AuditFields {
 }
 
 export interface IntegrationConfig extends AuditFields {
-  provider: 'SATUSEHAT_FHIR' | 'WHATSAPP_API' | 'FIREBASE_CLOUD';
+  provider: 'SATUSEHAT_FHIR' | 'WHATSAPP_API' | 'FIREBASE_CLOUD' | 'CUSTOM_API' | string;
   name: string;
   endpointUrl: string;
   organizationId?: string;

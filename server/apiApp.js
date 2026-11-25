@@ -973,11 +973,32 @@ export function createApiApp() {
       res.status(404).json({ error: 'Pengguna tidak ditemukan.' });
       return;
     }
-    const { displayName, email, role, active, newPassword, strNumber, sipNumber } = req.body || {};
+    const { username, displayName, email, role, active, newPassword, strNumber, sipNumber } = req.body || {};
 
-    const beforeSummary = `${user.displayName} | ${user.role} | active=${user.active}`;
+    const beforeSummary = `${user.username} | ${user.displayName} | ${user.role} | active=${user.active}`;
+    const prevUsername = user.username.toLowerCase();
+    if (username && String(username).trim().toLowerCase() !== prevUsername) {
+      const nextUsername = String(username).trim().toLowerCase();
+      if (!/^[a-z0-9._-]{3,40}$/.test(nextUsername)) {
+        res.status(400).json({ error: 'Username harus 3-40 karakter (huruf, angka, titik, garis bawah).' });
+        return;
+      }
+      if (credStore.credentials[nextUsername]) {
+        res.status(409).json({ error: 'Username baru sudah digunakan oleh akun lain.' });
+        return;
+      }
+      if (credStore.credentials[prevUsername]) {
+        credStore.credentials[nextUsername] = {
+          ...credStore.credentials[prevUsername],
+          username: nextUsername
+        };
+        delete credStore.credentials[prevUsername];
+        saveCreds();
+      }
+      user.username = nextUsername;
+    }
     if (displayName) user.displayName = String(displayName).trim();
-    if (email) user.email = String(email).trim();
+    if (typeof email === 'string') user.email = email.trim();
     if (role && ['SUPER_ADMIN', 'DOKTER_SPOG', 'ASISTEN_DOKTER'].includes(role) && user.id !== req.session.userId) {
       user.role = role;
     }
@@ -1014,11 +1035,47 @@ export function createApiApp() {
       entity: 'users',
       entityId: user.id,
       beforeData: beforeSummary,
-      afterData: `${user.displayName} | ${user.role} | active=${user.active}`,
+      afterData: `${user.username} | ${user.displayName} | ${user.role} | active=${user.active}`,
       deviceInfo: String(req.headers['user-agent'] || 'Web Client').slice(0, 120)
     });
     saveDb();
     res.json({ user });
+  });
+
+  router.delete('/auth/users/:userId', requireAuth, (req, res) => {
+    if (req.session?.role !== 'SUPER_ADMIN') {
+      res.status(403).json({ error: 'Hanya Super Admin yang dapat menghapus akun pengguna.' });
+      return;
+    }
+    const { userId } = req.params;
+    if (userId === req.session.userId) {
+      res.status(400).json({ error: 'Anda tidak dapat menghapus akun Anda sendiri yang sedang aktif.' });
+      return;
+    }
+    const idx = dbState.users.findIndex((u) => u.id === userId);
+    if (idx < 0) {
+      res.status(404).json({ error: 'Pengguna tidak ditemukan.' });
+      return;
+    }
+    const removed = dbState.users[idx];
+    dbState.users.splice(idx, 1);
+    const normUser = String(removed.username || '').toLowerCase();
+    if (credStore.credentials[normUser]) {
+      delete credStore.credentials[normUser];
+      saveCreds();
+    }
+    appendServerAudit({
+      userId: req.session.userId,
+      userName: req.session.displayName,
+      role: req.session.role,
+      action: 'DELETE_USER',
+      entity: 'users',
+      entityId: removed.id,
+      beforeData: `${removed.username} | ${removed.displayName} | ${removed.role}`,
+      deviceInfo: String(req.headers['user-agent'] || 'Web Client').slice(0, 120)
+    });
+    saveDb();
+    res.json({ ok: true, deletedId: removed.id, deletedEmail: removed.email || '' });
   });
 
   router.get('/store/state', requireAuth, (req, res) => {

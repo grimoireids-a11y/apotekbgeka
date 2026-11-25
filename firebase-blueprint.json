@@ -16,12 +16,36 @@
         "e2eeSalt": { "type": "string", "maxLength": 128 },
         "e2eeWrappedKey": { "type": "string", "maxLength": 1024 },
         "e2eeFingerprint": { "type": "string", "maxLength": 64 },
+        "e2eePublicKey": { "type": "string", "maxLength": 1024 },
+        "lastLoginAt": { "type": "string", "format": "date-time" },
+        "isDemo": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
         "createdBy": { "type": "string", "maxLength": 128 },
         "updatedAt": { "type": "string", "format": "date-time" },
         "updatedBy": { "type": "string", "maxLength": 128 }
       },
       "required": ["id", "displayName", "role", "active", "createdAt", "createdBy", "updatedAt", "updatedBy"]
+    },
+    "StaffEmailLookup": {
+      "title": "StaffEmailLookup",
+      "description": "Email-indexed role and active status lookup for Firebase Google Auth staff provisioning",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 160 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "username": { "type": "string", "maxLength": 64 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "role": { "type": "string", "enum": ["SUPER_ADMIN", "DOKTER_SPOG", "ASISTEN_DOKTER"] },
+        "strNumber": { "type": "string", "maxLength": 80 },
+        "sipNumber": { "type": "string", "maxLength": 80 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "userId", "email", "displayName", "role", "active", "createdAt", "createdBy", "updatedAt", "updatedBy"]
     },
     "RoleDefinition": {
       "title": "RoleDefinition",
@@ -606,6 +630,7 @@
   },
   "firestore": {
     "/users/{userId}": { "schema": { "$ref": "#/entities/UserAccount" }, "description": "Staff accounts and E2EE wrapped keys" },
+    "/staff_emails/{emailId}": { "schema": { "$ref": "#/entities/StaffEmailLookup" }, "description": "Email-keyed staff RBAC lookup for Google Auth login" },
     "/roles/{roleId}": { "schema": { "$ref": "#/entities/RoleDefinition" }, "description": "RBAC role definitions" },
     "/permissions/{permissionId}": { "schema": { "$ref": "#/entities/PermissionDefinition" }, "description": "Granular permissions catalog" },
     "/practice_settings/{settingId}": { "schema": { "$ref": "#/entities/PracticeSettings" }, "description": "Practice profile and numbering settings" },

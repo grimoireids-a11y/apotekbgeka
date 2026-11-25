@@ -11,6 +11,10 @@ service cloud.firestore {
       return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidEmailDocId(id) {
+      return id is string && id.size() >= 3 && id.size() <= 160 && !id.matches('.*[/].*');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -27,19 +31,26 @@ service cloud.firestore {
       return isVerifiedAuth() && request.auth.token.email == 'grimoireids@gmail.com';
     }
 
-    function hasStaffProfile() {
+    function hasUidProfile() {
       return isVerifiedAuth() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
     }
 
+    function hasEmailProfile() {
+      return isVerifiedAuth() &&
+        request.auth.token.email is string &&
+        exists(/databases/$(database)/documents/staff_emails/$(request.auth.token.email.lower()));
+    }
+
     function staffRole() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+      return hasUidProfile()
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : get(/databases/$(database)/documents/staff_emails/$(request.auth.token.email.lower())).data.role;
     }
 
     function isStaffActive() {
-      return isBootstrappedSuperAdmin() || (
-        hasStaffProfile() &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true
-      );
+      return isBootstrappedSuperAdmin() ||
+        (hasUidProfile() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true) ||
+        (hasEmailProfile() && get(/databases/$(database)/documents/staff_emails/$(request.auth.token.email.lower())).data.active == true);
     }
 
     function isSuperAdmin() {
@@ -67,11 +78,11 @@ service cloud.firestore {
     }
 
     function isValidAuditMetadata(data) {
-      return isNonEmptyString(data.id, 128) &&
+      return isNonEmptyString(data.id, 160) &&
         isNonEmptyString(data.createdAt, 40) &&
-        isNonEmptyString(data.createdBy, 128) &&
+        isNonEmptyString(data.createdBy, 160) &&
         isNonEmptyString(data.updatedAt, 40) &&
-        isNonEmptyString(data.updatedBy, 128);
+        isNonEmptyString(data.updatedBy, 160);
     }
 
     function immutableAuditFieldsUnchanged() {
@@ -85,9 +96,24 @@ service cloud.firestore {
         data.keys().hasOnly([
           'id', 'username', 'displayName', 'email', 'role', 'strNumber', 'sipNumber',
           'active', 'e2eeSalt', 'e2eeWrappedKey', 'e2eeFingerprint', 'e2eePublicKey',
+          'lastLoginAt', 'isDemo',
           'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
         ]) &&
         isValidAuditMetadata(data) &&
+        isNonEmptyString(data.displayName, 120) &&
+        data.role in ['SUPER_ADMIN', 'DOKTER_SPOG', 'ASISTEN_DOKTER'] &&
+        data.active is bool;
+    }
+
+    function isValidStaffEmail(data) {
+      return data.keys().hasAll(['id', 'userId', 'email', 'displayName', 'role', 'active', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'email', 'username', 'displayName', 'role',
+          'strNumber', 'sipNumber', 'active',
+          'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+        ]) &&
+        isValidAuditMetadata(data) &&
+        isNonEmptyString(data.email, 160) &&
         isNonEmptyString(data.displayName, 120) &&
         data.role in ['SUPER_ADMIN', 'DOKTER_SPOG', 'ASISTEN_DOKTER'] &&
         data.active is bool;
@@ -115,7 +141,7 @@ service cloud.firestore {
         data.keys().hasOnly([
           'id', 'visitNumber', 'patientId', 'patientName', 'patientRm', 'doctorId', 'doctorName',
           'visitType', 'serviceCategory', 'initialComplaint', 'initialVitals', 'status',
-          'paymentStatus', 'queueNumber', 'visitDate', 'isDemo',
+          'paymentStatus', 'queueNumber', 'visitDate', 'active', 'isDemo',
           'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
         ]) &&
         isValidAuditMetadata(data) &&
@@ -127,10 +153,10 @@ service cloud.firestore {
     function isValidMedicalRecord(data) {
       return data.keys().hasAll(['id', 'visitId', 'patientId', 'status', 'version', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']) &&
         data.keys().hasOnly([
-          'id', 'visitId', 'patientId', 'patientName', 'doctorId', 'doctorName',
-          'anamnesis', 'physicalExam', 'obstetricExam', 'gynecologyExam',
-          'diagnoses', 'plan', 'status', 'signedAt', 'signedBy', 'signatureHash',
-          'version', 'e2ee', 'isDemo',
+          'id', 'visitId', 'patientId', 'patientName', 'patientRm', 'doctorId', 'doctorName',
+          'visitDate', 'anamnesis', 'physicalExam', 'obstetricExam', 'gynecologyExam',
+          'diagnoses', 'doctorNotes', 'plan', 'status', 'signedAt', 'signedBy', 'signatureHash',
+          'version', 'e2ee', 'active', 'isDemo',
           'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
         ]) &&
         isValidAuditMetadata(data) &&
@@ -145,7 +171,7 @@ service cloud.firestore {
         data.keys().hasOnly([
           'id', 'invoiceNumber', 'visitId', 'patientId', 'patientName', 'patientRm',
           'items', 'subtotal', 'discount', 'tax', 'total', 'paidAmount', 'remainingAmount',
-          'status', 'adjustmentReason', 'isDemo',
+          'status', 'adjustmentReason', 'active', 'isDemo',
           'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
         ]) &&
         isValidAuditMetadata(data) &&
@@ -158,9 +184,9 @@ service cloud.firestore {
     function isValidPayment(data) {
       return data.keys().hasAll(['id', 'receiptNumber', 'invoiceId', 'patientId', 'amount', 'method', 'status', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy']) &&
         data.keys().hasOnly([
-          'id', 'receiptNumber', 'invoiceId', 'invoiceNumber', 'patientId', 'patientName',
-          'amount', 'receivedAmount', 'changeAmount', 'method', 'referenceNumber',
-          'status', 'cashierName', 'cancelReason', 'paymentDate', 'isDemo',
+          'id', 'receiptNumber', 'invoiceId', 'invoiceNumber', 'visitId', 'patientId', 'patientName',
+          'patientRm', 'amount', 'receivedAmount', 'changeAmount', 'method', 'referenceNumber',
+          'status', 'cashierName', 'cancelReason', 'paymentDate', 'active', 'isDemo',
           'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
         ]) &&
         isValidAuditMetadata(data) &&
@@ -200,15 +226,26 @@ service cloud.firestore {
         (isVerifiedAuth() && request.auth.uid == userId &&
           incoming().role == existing().role &&
           incoming().active == existing().active &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'e2eeSalt', 'e2eeWrappedKey', 'e2eeFingerprint', 'updatedAt', 'updatedBy']))
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'e2eeSalt', 'e2eeWrappedKey', 'e2eeFingerprint', 'lastLoginAt', 'updatedAt', 'updatedBy']))
       );
       allow delete: if isValidId(userId) && isSuperAdmin() && request.auth.uid != userId;
+    }
+
+    // 1b. Email-keyed Staff RBAC Lookup (Allows Super Admin to pre-provision Google Auth staff by email)
+    match /staff_emails/{emailId} {
+      allow get: if isValidEmailDocId(emailId) && (
+        isSuperAdmin() ||
+        (isVerifiedAuth() && request.auth.token.email is string && request.auth.token.email.lower() == emailId)
+      );
+      allow list: if isSuperAdmin();
+      allow create, update: if isValidEmailDocId(emailId) && isSuperAdmin() && isValidStaffEmail(incoming());
+      allow delete: if isValidEmailDocId(emailId) && isSuperAdmin() && emailId != 'grimoireids@gmail.com';
     }
 
     // 2-3. Roles & Permissions
     match /roles/{roleId} {
       allow get: if isValidId(roleId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.active is bool;
+      allow list: if isStaffActive() && request.query.limit <= 100;
       allow create: if isValidId(roleId) && isSuperAdmin() && isValidGenericEntity(incoming());
       allow update: if isValidId(roleId) && isSuperAdmin() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
       allow delete: if isValidId(roleId) && isSuperAdmin();
@@ -216,7 +253,7 @@ service cloud.firestore {
 
     match /permissions/{permissionId} {
       allow get: if isValidId(permissionId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.active is bool;
+      allow list: if isStaffActive() && request.query.limit <= 200;
       allow create: if isValidId(permissionId) && isSuperAdmin() && isValidGenericEntity(incoming());
       allow update: if isValidId(permissionId) && isSuperAdmin() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
       allow delete: if isValidId(permissionId) && isSuperAdmin();
@@ -225,7 +262,7 @@ service cloud.firestore {
     // 4. Practice Settings
     match /practice_settings/{settingId} {
       allow get: if isValidId(settingId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.id is string;
+      allow list: if isStaffActive() && request.query.limit <= 20;
       allow create, update: if isValidId(settingId) && isSuperAdmin() && isValidGenericEntity(incoming());
       allow delete: if false;
     }
@@ -233,7 +270,7 @@ service cloud.firestore {
     // 5-6. Patients & Patient Contacts
     match /patients/{patientId} {
       allow get: if isValidId(patientId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.active is bool;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(patientId) && isStaffActive() && isValidPatient(incoming());
       allow update: if isValidId(patientId) && isValidPatient(incoming()) && immutableAuditFieldsUnchanged() && (
         isSuperAdmin() ||
@@ -245,7 +282,7 @@ service cloud.firestore {
 
     match /patient_contacts/{contactId} {
       allow get: if isValidId(contactId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(contactId) && isStaffActive() && isValidGenericEntity(incoming());
       allow update: if isValidId(contactId) && isStaffActive() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
       allow delete: if isValidId(contactId) && isSuperAdmin();
@@ -254,7 +291,7 @@ service cloud.firestore {
     // 7-8. Visits & Queues
     match /visits/{visitId} {
       allow get: if isValidId(visitId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(visitId) && isStaffActive() && isValidVisit(incoming());
       allow update: if isValidId(visitId) && isValidVisit(incoming()) && immutableAuditFieldsUnchanged() && (
         isSuperAdmin() ||
@@ -266,7 +303,7 @@ service cloud.firestore {
 
     match /queues/{queueId} {
       allow get: if isValidId(queueId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.visitId is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(queueId) && isStaffActive() && isValidGenericEntity(incoming());
       allow update: if isValidId(queueId) && isStaffActive() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
       allow delete: if isValidId(queueId) && isSuperAdmin();
@@ -275,26 +312,27 @@ service cloud.firestore {
     // 9-10. Electronic Medical Records (Strictly Doctor/SuperAdmin write, terminal lock enforced)
     match /medical_records/{recordId} {
       allow get: if isValidId(recordId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(recordId) && isMedicalAuthorized() && isValidMedicalRecord(incoming());
       allow update: if isValidId(recordId) && isValidMedicalRecord(incoming()) && immutableAuditFieldsUnchanged() && (
         isSuperAdmin() ||
         (isDoctor() && existing().status != 'locked' && incoming().patientId == existing().patientId && incoming().visitId == existing().visitId)
       );
-      allow delete: if false;
+      allow delete: if isValidId(recordId) && isSuperAdmin() && existing().isDemo == true;
     }
 
     match /medical_record_versions/{versionId} {
       allow get: if isValidId(versionId) && isMedicalAuthorized();
-      allow list: if isMedicalAuthorized() && resource.data.medicalRecordId is string;
+      allow list: if isMedicalAuthorized() && request.query.limit <= 1000;
       allow create: if isValidId(versionId) && isMedicalAuthorized() && isNonEmptyString(incoming().medicalRecordId, 128);
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if isValidId(versionId) && isSuperAdmin() && existing().isDemo == true;
     }
 
     // 11-15. Pregnancies, ANC Visits, USG, Diagnoses, ICD-10
     match /pregnancies/{pregnancyId} {
       allow get: if isValidId(pregnancyId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(pregnancyId) && isMedicalAuthorized() && isValidGenericEntity(incoming());
       allow update: if isValidId(pregnancyId) && isMedicalAuthorized() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
       allow delete: if isValidId(pregnancyId) && isSuperAdmin();
@@ -302,7 +340,7 @@ service cloud.firestore {
 
     match /antenatal_visits/{ancId} {
       allow get: if isValidId(ancId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.pregnancyId is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(ancId) && isMedicalAuthorized() && isValidGenericEntity(incoming());
       allow update: if isValidId(ancId) && isMedicalAuthorized() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
       allow delete: if isValidId(ancId) && isSuperAdmin();
@@ -310,7 +348,7 @@ service cloud.firestore {
 
     match /ultrasound_records/{usgId} {
       allow get: if isValidId(usgId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(usgId) && isMedicalAuthorized() && isValidGenericEntity(incoming());
       allow update: if isValidId(usgId) && isMedicalAuthorized() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
       allow delete: if isValidId(usgId) && isSuperAdmin();
@@ -318,7 +356,7 @@ service cloud.firestore {
 
     match /diagnoses/{diagnosisId} {
       allow get: if isValidId(diagnosisId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(diagnosisId) && isMedicalAuthorized() && isValidGenericEntity(incoming());
       allow update: if isValidId(diagnosisId) && isMedicalAuthorized() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
       allow delete: if isValidId(diagnosisId) && isSuperAdmin();
@@ -326,7 +364,7 @@ service cloud.firestore {
 
     match /icd10_codes/{codeId} {
       allow get: if isValidId(codeId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.code is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create, update: if isValidId(codeId) && isMedicalAuthorized() && isValidGenericEntity(incoming());
       allow delete: if isValidId(codeId) && isSuperAdmin();
     }
@@ -334,7 +372,7 @@ service cloud.firestore {
     // 16-21. Procedures, Services, Medicines, Prescriptions, Labs
     match /procedures/{procedureId} {
       allow get: if isValidId(procedureId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.visitId is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(procedureId) && isStaffActive() && isValidGenericEntity(incoming());
       allow update: if isValidId(procedureId) && isStaffActive() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
       allow delete: if isValidId(procedureId) && isSuperAdmin();
@@ -342,21 +380,21 @@ service cloud.firestore {
 
     match /services/{serviceId} {
       allow get: if isValidId(serviceId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.active is bool;
+      allow list: if isStaffActive() && request.query.limit <= 500;
       allow create, update: if isValidId(serviceId) && isSuperAdmin() && isValidGenericEntity(incoming());
       allow delete: if isValidId(serviceId) && isSuperAdmin();
     }
 
     match /medicines/{medicineId} {
       allow get: if isValidId(medicineId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.active is bool;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create, update: if isValidId(medicineId) && isCashierAuthorized() && isValidGenericEntity(incoming());
       allow delete: if isValidId(medicineId) && isSuperAdmin();
     }
 
     match /prescriptions/{rxId} {
       allow get: if isValidId(rxId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(rxId) && isMedicalAuthorized() && isValidGenericEntity(incoming());
       allow update: if isValidId(rxId) && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged() && (
         isMedicalAuthorized() ||
@@ -368,7 +406,7 @@ service cloud.firestore {
 
     match /laboratory_orders/{orderId} {
       allow get: if isValidId(orderId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(orderId) && isStaffActive() && isValidGenericEntity(incoming());
       allow update: if isValidId(orderId) && isStaffActive() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
       allow delete: if isValidId(orderId) && isSuperAdmin();
@@ -376,7 +414,7 @@ service cloud.firestore {
 
     match /laboratory_results/{resultId} {
       allow get: if isValidId(resultId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(resultId) && isStaffActive() && isValidGenericEntity(incoming());
       allow update: if isValidId(resultId) && isStaffActive() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
       allow delete: if isValidId(resultId) && isSuperAdmin();
@@ -385,59 +423,59 @@ service cloud.firestore {
     // 22-28. Cashier, Invoices, Payments, Refunds, Cash Ledger & Expenses
     match /invoices/{invoiceId} {
       allow get: if isValidId(invoiceId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(invoiceId) && isStaffActive() && isValidInvoice(incoming());
       allow update: if isValidId(invoiceId) && isValidInvoice(incoming()) && immutableAuditFieldsUnchanged() && isCashierAuthorized();
-      allow delete: if false;
+      allow delete: if isValidId(invoiceId) && isSuperAdmin() && existing().isDemo == true;
     }
 
     match /invoice_items/{itemId} {
       allow get: if isValidId(itemId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.invoiceId is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(itemId) && isStaffActive() && isValidGenericEntity(incoming());
       allow update: if isValidId(itemId) && isCashierAuthorized() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
-      allow delete: if false;
+      allow delete: if isValidId(itemId) && isSuperAdmin() && existing().isDemo == true;
     }
 
     match /payments/{paymentId} {
       allow get: if isValidId(paymentId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.invoiceId is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(paymentId) && isCashierAuthorized() && isValidPayment(incoming());
       allow update: if isValidId(paymentId) && isValidPayment(incoming()) && immutableAuditFieldsUnchanged() && (
         isSuperAdmin() ||
         (isAssistant() && existing().status == 'Sukses' &&
           incoming().diff(existing()).affectedKeys().hasOnly(['status', 'cancelReason', 'updatedAt', 'updatedBy']))
       );
-      allow delete: if false;
+      allow delete: if isValidId(paymentId) && isSuperAdmin() && existing().isDemo == true;
     }
 
     match /refunds/{refundId} {
       allow get: if isValidId(refundId) && isCashierAuthorized();
-      allow list: if isCashierAuthorized() && resource.data.paymentId is string;
-      allow create: if isValidId(refundId) && isCashierAuthorized() && isValidGenericEntity(incoming()) && incoming().status == 'Menunggu Persetujuan';
+      allow list: if isCashierAuthorized() && request.query.limit <= 500;
+      allow create: if isValidId(refundId) && isCashierAuthorized() && isValidGenericEntity(incoming()) && (isSuperAdmin() || incoming().status == 'Menunggu Persetujuan');
       allow update: if isValidId(refundId) && isSuperAdmin() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
-      allow delete: if false;
+      allow delete: if isValidId(refundId) && isSuperAdmin() && existing().isDemo == true;
     }
 
     match /cash_sessions/{sessionId} {
       allow get: if isValidId(sessionId) && isCashierAuthorized();
-      allow list: if isCashierAuthorized() && resource.data.sessionDate is string;
+      allow list: if isCashierAuthorized() && request.query.limit <= 500;
       allow create: if isValidId(sessionId) && isCashierAuthorized() && isValidGenericEntity(incoming());
       allow update: if isValidId(sessionId) && isCashierAuthorized() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
-      allow delete: if false;
+      allow delete: if isValidId(sessionId) && isSuperAdmin() && existing().isDemo == true;
     }
 
     match /cash_transactions/{txId} {
       allow get: if isValidId(txId) && isCashierAuthorized();
-      allow list: if isCashierAuthorized() && resource.data.type is string;
+      allow list: if isCashierAuthorized() && request.query.limit <= 1000;
       allow create: if isValidId(txId) && isCashierAuthorized() && isValidGenericEntity(incoming());
       allow update: if isValidId(txId) && isSuperAdmin() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
-      allow delete: if false;
+      allow delete: if isValidId(txId) && isSuperAdmin() && existing().isDemo == true;
     }
 
     match /expenses/{expenseId} {
       allow get: if isValidId(expenseId) && isCashierAuthorized();
-      allow list: if isCashierAuthorized() && resource.data.category is string;
+      allow list: if isCashierAuthorized() && request.query.limit <= 1000;
       allow create: if isValidId(expenseId) && isCashierAuthorized() && isValidGenericEntity(incoming());
       allow update: if isValidId(expenseId) && isCashierAuthorized() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
       allow delete: if isValidId(expenseId) && isSuperAdmin();
@@ -446,7 +484,7 @@ service cloud.firestore {
     // 29-31. Appointments, Documents, Notifications
     match /appointments/{appointmentId} {
       allow get: if isValidId(appointmentId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.patientId is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(appointmentId) && isStaffActive() && isValidGenericEntity(incoming());
       allow update: if isValidId(appointmentId) && isStaffActive() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
       allow delete: if isValidId(appointmentId) && isSuperAdmin();
@@ -454,7 +492,7 @@ service cloud.firestore {
 
     match /documents/{documentId} {
       allow get: if isValidId(documentId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.docType is string;
+      allow list: if isStaffActive() && request.query.limit <= 1000;
       allow create: if isValidId(documentId) && isStaffActive() && isValidGenericEntity(incoming());
       allow update: if isValidId(documentId) && isStaffActive() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
       allow delete: if isValidId(documentId) && isSuperAdmin();
@@ -462,7 +500,7 @@ service cloud.firestore {
 
     match /notifications/{notificationId} {
       allow get: if isValidId(notificationId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.category is string;
+      allow list: if isStaffActive() && request.query.limit <= 500;
       allow create: if isValidId(notificationId) && isStaffActive() && isValidGenericEntity(incoming());
       allow update: if isValidId(notificationId) && isStaffActive() && isValidGenericEntity(incoming()) && immutableAuditFieldsUnchanged();
       allow delete: if isValidId(notificationId) && isSuperAdmin();
@@ -471,7 +509,7 @@ service cloud.firestore {
     // 32. Immutable Audit Logs
     match /audit_logs/{logId} {
       allow get: if isValidId(logId) && isSuperAdmin();
-      allow list: if isSuperAdmin() && resource.data.action is string;
+      allow list: if isSuperAdmin() && request.query.limit <= 1000;
       allow create: if isValidId(logId) && isStaffActive() && isValidAuditLog(incoming());
       allow update, delete: if false;
     }
@@ -479,21 +517,21 @@ service cloud.firestore {
     // 33-35. System Settings, Integrations, Backups
     match /system_settings/{settingId} {
       allow get: if isValidId(settingId) && isStaffActive();
-      allow list: if isStaffActive() && resource.data.id is string;
+      allow list: if isStaffActive() && request.query.limit <= 20;
       allow create, update: if isValidId(settingId) && isSuperAdmin() && isValidGenericEntity(incoming());
       allow delete: if false;
     }
 
     match /integrations/{integrationId} {
       allow get: if isValidId(integrationId) && isSuperAdmin();
-      allow list: if isSuperAdmin() && resource.data.provider is string;
+      allow list: if isSuperAdmin() && request.query.limit <= 100;
       allow create, update: if isValidId(integrationId) && isSuperAdmin() && isValidGenericEntity(incoming());
       allow delete: if isValidId(integrationId) && isSuperAdmin();
     }
 
     match /backups/{backupId} {
       allow get: if isValidId(backupId) && isSuperAdmin();
-      allow list: if isSuperAdmin() && resource.data.label is string;
+      allow list: if isSuperAdmin() && request.query.limit <= 200;
       allow create: if isValidId(backupId) && isSuperAdmin() && isValidGenericEntity(incoming());
       allow update, delete: if false;
     }
